@@ -27,6 +27,7 @@ properties:
           - mediatek,mt6765-auxadc
           - mediatek,mt7622-auxadc
           - mediatek,mt7986-auxadc
+          - mediatek,mt8163-auxadc
           - mediatek,mt8173-auxadc
       - items:
           - enum:
@@ -53,7 +54,9 @@ properties:
     maxItems: 1
 
   clock-names:
-    const: main
+    enum:
+      - main
+      - auxadc-main
 
   "#io-channel-cells":
     const: 1
