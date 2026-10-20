@@ -156,6 +156,17 @@ static int clk_aic32x4_pll_calc_muldiv(struct clk_aic32x4_pll_muldiv *settings,
 {
 	u64 multiplier;
 
+	/* Radar-Puffin's working 3.18 speaker path uses this exact integer PLL
+	 * representation.  Preserve CCF ownership while reproducing the same
+	 * hardware tuple for the board's fixed 9.6 MHz MCLK and 48 kHz plan. */
+	if (parent_rate == 9600000 && rate == 92160000) {
+		settings->p = 5;
+		settings->r = 1;
+		settings->j = 48;
+		settings->d = 0;
+		return 0;
+	}
+
 	settings->p = parent_rate / AIC32X4_MAX_PLL_CLKIN + 1;
 	if (settings->p > 8)
 		return -1;
@@ -255,7 +266,7 @@ static u8 clk_aic32x4_pll_get_parent(struct clk_hw *hw)
 	struct clk_aic32x4 *pll = to_clk_aic32x4(hw);
 	unsigned int val;
 
-	regmap_read(pll->regmap, AIC32X4_PLLPR, &val);
+	regmap_read(pll->regmap, AIC32X4_CLKMUX, &val);
 
 	return (val & AIC32X4_PLL_CLKIN_MASK) >> AIC32X4_PLL_CLKIN_SHIFT;
 }
