@@ -1033,6 +1033,11 @@ static void spi_set_cs(struct spi_device *spi, bool enable, bool force)
 }
 
 #ifdef CONFIG_HAS_DMA
+static bool spi_hw38_is_fw_tx(const struct spi_transfer *xfer)
+{
+	return xfer->tx_buf && !xfer->rx_buf && xfer->len == 32768;
+}
+
 static int spi_map_buf_attrs(struct spi_controller *ctlr, struct device *dev,
 			     struct sg_table *sgt, void *buf, size_t len,
 			     enum dma_data_direction dir, unsigned long attrs)
@@ -1174,6 +1179,30 @@ static int __spi_map_msg(struct spi_controller *ctlr, struct spi_message *msg)
 						attrs);
 			if (ret != 0)
 				return ret;
+
+			if (spi_hw38_is_fw_tx(xfer)) {
+				struct scatterlist *sg;
+				unsigned int i;
+				unsigned int logged = min_t(unsigned int,
+							    xfer->tx_sg.nents, 16);
+
+				pr_info("HW38 fw-tx-dma map dev=%s mask=%#llx max_seg=%u max_dma_len=%zu orig_nents=%u nents=%u\n",
+					dev_name(tx_dev),
+					(unsigned long long)dma_get_mask(tx_dev),
+					dma_get_max_seg_size(tx_dev),
+					ctlr->max_dma_len,
+					xfer->tx_sg.orig_nents,
+					xfer->tx_sg.nents);
+				for_each_sg(xfer->tx_sg.sgl, sg, logged, i) {
+					dma_addr_t dma_addr = sg_dma_address(sg);
+
+					pr_info("HW38 fw-tx-dma sg=%u dma=%pad len=%u\n",
+						i, &dma_addr, sg_dma_len(sg));
+				}
+				if (logged < xfer->tx_sg.nents)
+					pr_info("HW38 fw-tx-dma sg-omitted=%u\n",
+						xfer->tx_sg.nents - logged);
+			}
 		}
 
 		if (xfer->rx_buf != NULL) {
@@ -1236,8 +1265,13 @@ static void spi_dma_sync_for_device(struct spi_controller *ctlr,
 	if (!ctlr->cur_msg_mapped)
 		return;
 
-	if (xfer->tx_sg.orig_nents)
+	if (xfer->tx_sg.orig_nents) {
+		if (spi_hw38_is_fw_tx(xfer))
+			pr_info("HW38 fw-tx-dma sync-for-device dev=%s orig_nents=%u nents=%u dir=to-device\n",
+				dev_name(tx_dev), xfer->tx_sg.orig_nents,
+				xfer->tx_sg.nents);
 		dma_sync_sgtable_for_device(tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
+	}
 	if (xfer->rx_sg.orig_nents)
 		dma_sync_sgtable_for_device(rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
 }
@@ -1253,8 +1287,13 @@ static void spi_dma_sync_for_cpu(struct spi_controller *ctlr,
 
 	if (xfer->rx_sg.orig_nents)
 		dma_sync_sgtable_for_cpu(rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
-	if (xfer->tx_sg.orig_nents)
+	if (xfer->tx_sg.orig_nents) {
+		if (spi_hw38_is_fw_tx(xfer))
+			pr_info("HW38 fw-tx-dma sync-for-cpu dev=%s orig_nents=%u nents=%u dir=to-device\n",
+				dev_name(tx_dev), xfer->tx_sg.orig_nents,
+				xfer->tx_sg.nents);
 		dma_sync_sgtable_for_cpu(tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
+	}
 }
 #else /* !CONFIG_HAS_DMA */
 static inline int __spi_map_msg(struct spi_controller *ctlr,
