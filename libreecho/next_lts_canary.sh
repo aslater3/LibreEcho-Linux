@@ -5,7 +5,9 @@
 #
 # Our commits are the non-merge commits not reachable from the upstream
 # stable tag the tree is on (v6.1.SUBLEVEL from the Makefile), so stable
-# merges and the merges of our own pull requests are both handled.
+# merges and the merges of our own pull requests are both handled.  Subtree
+# squash commits (git-subtree-dir: trailer) are skipped: their paths are
+# relative to the subtree, and the connectivity repository has its own canary.
 #
 #   libreecho/next_lts_canary.sh [--strict] [NEXT_LTS]    (default 6.18)
 #   libreecho/next_lts_canary.sh --list-series   (print the series and exit)
@@ -40,7 +42,8 @@ if [ "$base" != "$BRANCH_POINT" ] &&
 	git fetch -q --shallow-exclude="$BRANCH_POINT" "$STABLE_URL" "refs/tags/$base:refs/tags/$base"
 fi
 
-mapfile -t series < <(git rev-list --reverse --topo-order --no-merges HEAD "^$BRANCH_POINT" "^$base")
+mapfile -t series < <(git rev-list --reverse --topo-order --no-merges \
+	--invert-grep --grep='^git-subtree-dir:' HEAD "^$BRANCH_POINT" "^$base")
 [ "${#series[@]}" -gt 0 ] || { echo "no LibreEcho commits since $base" >&2; exit 2; }
 if [ "$LIST_ONLY" -eq 1 ]; then
 	printf '%s\n' "${series[@]}"
