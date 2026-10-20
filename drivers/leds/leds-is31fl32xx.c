@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/leds.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 
@@ -44,6 +45,10 @@ struct is31fl32xx_priv {
 	const struct is31fl32xx_chipdef *cdef;
 	struct i2c_client *client;
 	unsigned int num_leds;
+	struct mutex frame_lock;
+	u8 channel_offset;
+	u8 frame[36];
+	bool boot_animation;
 	struct is31fl32xx_led_data leds[];
 };
 
@@ -286,11 +291,32 @@ static int is31fl32xx_software_shutdown(struct is31fl32xx_priv *priv,
 static int is31fl32xx_init_regs(struct is31fl32xx_priv *priv)
 {
 	const struct is31fl32xx_chipdef *cdef = priv->cdef;
+	unsigned int i;
 	int ret;
 
 	ret = is31fl32xx_reset_regs(priv);
 	if (ret)
 		return ret;
+
+	/*
+	 * Resetting the controller does not make the initial PWM frame explicit.
+	 * Stage an all-off frame before exposing any enabled channels.  The
+	 * IS31FL3216 custom reset already performs this step while shutdown is
+	 * asserted, so avoid duplicating its writes here.
+	 */
+	if (!cdef->reset_func) {
+		for (i = 0; i < cdef->channels; i++) {
+			ret = is31fl32xx_write(priv,
+					       cdef->pwm_register_base + i,
+					       0x00);
+			if (ret)
+				return ret;
+		}
+
+		ret = is31fl32xx_write(priv, cdef->pwm_update_reg, 0);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * Set enable bit for all channels.
@@ -324,6 +350,106 @@ static int is31fl32xx_init_regs(struct is31fl32xx_priv *priv)
 
 	return 0;
 }
+
+/*
+ * LibreEcho's userspace renders the 12 RGB pixels atomically.  Keep this
+ * board-specific interface on the I2C device while retaining the standard
+ * per-channel LED class interface for DTs that describe child LEDs.
+ */
+static int is31fl3236_update_frame(struct is31fl32xx_priv *priv,
+				   const u8 *frame)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(priv->frame); i++) {
+		u8 channel = (i + priv->channel_offset) % ARRAY_SIZE(priv->frame);
+
+		ret = is31fl32xx_write(priv,
+				       priv->cdef->pwm_register_base + channel,
+				       frame[i]);
+		if (ret)
+			return ret;
+	}
+
+	ret = is31fl32xx_write(priv, priv->cdef->pwm_update_reg, 0);
+	if (!ret)
+		memcpy(priv->frame, frame, sizeof(priv->frame));
+	return ret;
+}
+
+static ssize_t frame_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	struct is31fl32xx_priv *priv = dev_get_drvdata(dev);
+	ssize_t len;
+
+	mutex_lock(&priv->frame_lock);
+	bin2hex(buf, priv->frame, sizeof(priv->frame));
+	len = sizeof(priv->frame) * 2;
+	buf[len++] = '\n';
+	buf[len] = '\0';
+	mutex_unlock(&priv->frame_lock);
+	return len;
+}
+
+static ssize_t frame_store(struct device *dev, struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	struct is31fl32xx_priv *priv = dev_get_drvdata(dev);
+	u8 frame[ARRAY_SIZE(priv->frame)];
+	size_t hex_len = count;
+	int ret;
+
+	if (hex_len && buf[hex_len - 1] == '\n')
+		hex_len--;
+	if (hex_len != sizeof(frame) * 2)
+		return -EINVAL;
+	ret = hex2bin(frame, buf, sizeof(frame));
+	if (ret)
+		return ret;
+
+	mutex_lock(&priv->frame_lock);
+	ret = is31fl3236_update_frame(priv, frame);
+	mutex_unlock(&priv->frame_lock);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(frame);
+
+static ssize_t boot_animation_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct is31fl32xx_priv *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%u\n", priv->boot_animation);
+}
+
+static ssize_t boot_animation_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct is31fl32xx_priv *priv = dev_get_drvdata(dev);
+	bool enabled;
+	int ret;
+
+	ret = kstrtobool(buf, &enabled);
+	if (ret)
+		return ret;
+	/* Userspace claims the ring by writing 0 before its first frame. */
+	priv->boot_animation = enabled;
+	return count;
+}
+static DEVICE_ATTR_RW(boot_animation);
+
+static struct attribute *is31fl3236_attrs[] = {
+	&dev_attr_frame.attr,
+	&dev_attr_boot_animation.attr,
+	NULL,
+};
+
+static const struct attribute_group is31fl3236_attr_group = {
+	.attrs = is31fl3236_attrs,
+};
 
 static int is31fl32xx_parse_child_dt(const struct device *dev,
 				     const struct device_node *child,
@@ -434,7 +560,7 @@ static int is31fl32xx_probe(struct i2c_client *client,
 	cdef = device_get_match_data(dev);
 
 	count = of_get_available_child_count(dev_of_node(dev));
-	if (!count)
+	if (!count && cdef != &is31fl3236_cdef)
 		return -EINVAL;
 
 	priv = devm_kzalloc(dev, struct_size(priv, leds, count),
@@ -444,6 +570,15 @@ static int is31fl32xx_probe(struct i2c_client *client,
 
 	priv->client = client;
 	priv->cdef = cdef;
+	mutex_init(&priv->frame_lock);
+	if (cdef == &is31fl3236_cdef) {
+		of_property_read_u8(dev_of_node(dev), "channel-offset",
+				    &priv->channel_offset);
+		priv->channel_offset %= ARRAY_SIZE(priv->frame);
+		priv->boot_animation =
+			of_property_read_bool(dev_of_node(dev),
+					      "play-boot-animation");
+	}
 	i2c_set_clientdata(client, priv);
 
 	ret = is31fl32xx_init_regs(priv);
@@ -453,6 +588,14 @@ static int is31fl32xx_probe(struct i2c_client *client,
 	ret = is31fl32xx_parse_dt(dev, priv);
 	if (ret)
 		return ret;
+
+	if (cdef == &is31fl3236_cdef) {
+		ret = devm_device_add_group(dev, &is31fl3236_attr_group);
+		if (ret)
+			return ret;
+		dev_info(dev,
+			 "LibreEcho 36-channel atomic frame interface ready\n");
+	}
 
 	return 0;
 }
