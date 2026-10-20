@@ -448,6 +448,7 @@ struct mtk_mmc_compatible {
 	bool use_internal_cd;
 	bool support_new_tx;
 	bool support_new_rx;
+	bool broken_runtime_pm;
 };
 
 struct msdc_tune_para {
@@ -517,6 +518,7 @@ struct msdc_host {
 	bool internal_cd;	/* Use internal card-detect logic */
 	bool cqhci;		/* support eMMC hw cmdq */
 	bool hsq_en;		/* Host Software Queue is enabled */
+	bool runtime_pm_held;
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
@@ -633,6 +635,20 @@ static const struct mtk_mmc_compatible mt8135_compat = {
 	.support_64g = false,
 };
 
+static const struct mtk_mmc_compatible mt8163_compat = {
+	.clk_div_bits = 12,
+	.recheck_sdio_irq = true,
+	.hs400_tune = false,
+	.pad_tune_reg = MSDC_PAD_TUNE0,
+	.async_fifo = true,
+	.data_tune = true,
+	.busy_check = false,
+	.stop_clk_fix = false,
+	.enhance_rx = false,
+	.support_64g = false,
+	.broken_runtime_pm = true,
+};
+
 static const struct mtk_mmc_compatible mt8173_compat = {
 	.clk_div_bits = 8,
 	.recheck_sdio_irq = true,
@@ -701,6 +717,7 @@ static const struct of_device_id msdc_of_ids[] = {
 	{ .compatible = "mediatek,mt7986-mmc", .data = &mt7986_compat},
 	{ .compatible = "mediatek,mt7988-mmc", .data = &mt7986_compat},
 	{ .compatible = "mediatek,mt8135-mmc", .data = &mt8135_compat},
+	{ .compatible = "mediatek,mt8163-mmc", .data = &mt8163_compat},
 	{ .compatible = "mediatek,mt8173-mmc", .data = &mt8173_compat},
 	{ .compatible = "mediatek,mt8183-mmc", .data = &mt8183_compat},
 	{ .compatible = "mediatek,mt8196-mmc", .data = &mt8196_compat},
@@ -3156,6 +3173,20 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	pm_runtime_set_autosuspend_delay(host->dev, MTK_MMC_AUTOSUSPEND_DELAY);
 	pm_runtime_use_autosuspend(host->dev);
 	pm_runtime_enable(host->dev);
+	if (host->dev_comp->broken_runtime_pm &&
+	    (mmc->caps & MMC_CAP_NONREMOVABLE)) {
+		/*
+		 * MT8163 restores enough state to enumerate and parse GPT before
+		 * the first autosuspend, but the non-removable eMMC then loses
+		 * CMD18 completion after the 50 ms runtime clock gate. Keep only
+		 * this SoC's soldered eMMC active; removable and SDIO hosts retain
+		 * the normal runtime-PM path.
+		 */
+		pm_runtime_get_noresume(host->dev);
+		host->runtime_pm_held = true;
+		dev_info(host->dev,
+			 "MT8163 non-removable eMMC runtime PM held active\n");
+	}
 	ret = mmc_add_host(mmc);
 
 	if (ret)
@@ -3163,6 +3194,8 @@ static int msdc_drv_probe(struct platform_device *pdev)
 
 	return 0;
 end:
+	if (host->runtime_pm_held)
+		pm_runtime_put_noidle(host->dev);
 	pm_runtime_disable(host->dev);
 release:
 	msdc_deinit_hw(host);
@@ -3198,6 +3231,8 @@ static void msdc_drv_remove(struct platform_device *pdev)
 	msdc_deinit_hw(host);
 	msdc_gate_clock(host);
 
+	if (host->runtime_pm_held)
+		pm_runtime_put_noidle(host->dev);
 	pm_runtime_disable(host->dev);
 	pm_runtime_put_noidle(host->dev);
 	dma_free_coherent(&pdev->dev,
