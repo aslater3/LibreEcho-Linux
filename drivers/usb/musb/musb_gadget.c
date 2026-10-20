@@ -807,8 +807,14 @@ void musb_g_rx(struct musb *musb, u8 epnum)
 	musb_ep_select(mbase, epnum);
 
 	req = next_request(musb_ep);
-	if (!req)
+	if (!req) {
+		csr = musb_readw(epio, MUSB_RXCSR);
+		dev_dbg_ratelimited(musb->controller,
+			"MT8163 MUSB RX no-request diag: ep=%u csr=%04x count=%04x busy=%u\n",
+			epnum, csr, musb_readw(epio, MUSB_RXCOUNT),
+			musb_ep->busy);
 		return;
+	}
 
 	trace_musb_req_rx(req);
 	request = &req->request;
@@ -1162,19 +1168,19 @@ void musb_free_request(struct usb_ep *ep, struct usb_request *req)
  */
 void musb_ep_restart(struct musb *musb, struct musb_request *req)
 {
-	u16 csr;
 	void __iomem *epio = req->ep->hw_ep->regs;
 
 	trace_musb_req_start(req);
 	musb_ep_select(musb->mregs, req->epnum);
-	if (req->tx) {
+	dev_dbg_ratelimited(musb->controller,
+		"MT8163 MUSB restart diag: ep=%u tx=%u len=%u csr=%04x count=%04x\n",
+		req->epnum, req->tx, req->request.length,
+		musb_readw(epio, req->tx ? MUSB_TXCSR : MUSB_RXCSR),
+		req->tx ? 0 : musb_readw(epio, MUSB_RXCOUNT));
+	if (req->tx)
 		txstate(musb, req);
-	} else {
-		csr = musb_readw(epio, MUSB_RXCSR);
-		csr |= MUSB_RXCSR_FLUSHFIFO | MUSB_RXCSR_P_WZC_BITS;
-		musb_writew(epio, MUSB_RXCSR, csr);
-		musb_writew(epio, MUSB_RXCSR, csr);
-	}
+	else
+		rxstate(musb, req);
 }
 
 static int musb_ep_restart_resume_work(struct musb *musb, void *data)
@@ -1227,6 +1233,10 @@ static int musb_gadget_queue(struct usb_ep *ep, struct usb_request *req,
 	request->request.status = -EINPROGRESS;
 	request->epnum = musb_ep->current_epnum;
 	request->tx = musb_ep->is_in;
+	dev_dbg_ratelimited(musb->controller,
+		"MT8163 MUSB enqueue diag: ep=%u tx=%u len=%u busy=%u\n",
+		request->epnum, request->tx, request->request.length,
+		musb_ep->busy);
 
 	map_dma_buffer(request, musb, musb_ep);
 
