@@ -271,6 +271,9 @@ static int mt6577_auxadc_probe(struct platform_device *pdev)
 	}
 
 	adc_dev->adc_clk = devm_clk_get(&pdev->dev, "main");
+	if (IS_ERR(adc_dev->adc_clk) &&
+	    PTR_ERR(adc_dev->adc_clk) != -EPROBE_DEFER)
+		adc_dev->adc_clk = devm_clk_get(&pdev->dev, "auxadc-main");
 	if (IS_ERR(adc_dev->adc_clk)) {
 		dev_err(&pdev->dev, "failed to get auxadc clock\n");
 		return PTR_ERR(adc_dev->adc_clk);
@@ -335,6 +338,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(mt6577_auxadc_pm_ops,
 				mt6577_auxadc_resume);
 
 static const struct of_device_id mt6577_auxadc_of_match[] = {
+	{ .compatible = "mediatek,mt8163-auxadc", .data = &mt8173_compat },
 	{ .compatible = "mediatek,mt2701-auxadc", .data = &mt8173_compat },
 	{ .compatible = "mediatek,mt2712-auxadc", .data = &mt8173_compat },
 	{ .compatible = "mediatek,mt7622-auxadc", .data = &mt8173_compat },

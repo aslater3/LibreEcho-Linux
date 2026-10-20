@@ -756,6 +756,7 @@ config MEDIATEK_MT6577_AUXADC
 	tristate "MediaTek AUXADC driver"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on HAS_IOMEM
+	default y if MACH_MT8163
 	help
 	  Say yes here to enable support for MediaTek mt65xx AUXADC.
 

@@ -1641,6 +1641,23 @@ config SND_SOC_TLV320ADC3XXX
 	 Enable support for Texas Instruments TLV320ADC3001 and TLV320ADC3101
 	 ADCs.
 
+config SND_SOC_TLV320AIC3101_AMAZON
+	tristate "Amazon multi-ADC TLV320AIC3101 codec"
+	depends on I2C
+	depends on COMMON_CLK
+	depends on GPIOLIB
+	help
+	  Enable the Amazon TLV320AIC3101 capture driver. This preserves the
+	  release control names, DAPM routes, DSP tuning, clock programming and
+	  aggregation of four stereo ADC3101 devices into one capture DAI.
+
+config SND_SOC_8_MICS
+	bool "Amazon TLV320AIC3101 four-ADC/8-microphone routing"
+	depends on SND_SOC_TLV320AIC3101_AMAZON
+	help
+	  Build the Amazon codec with ADC_A through ADC_D and its 8-microphone
+	  userspace and machine-driver ABI.
+
 config SND_SOC_TLV320AIC23
 	tristate
 
@@ -1666,6 +1683,15 @@ config SND_SOC_TLV320AIC31XX
 config SND_SOC_TLV320AIC32X4
 	tristate
 	depends on COMMON_CLK
+
+config SND_SOC_TLV320AIC32X4_PRB25_DIAG
+	bool "TLV320AIC32x4 PRB_P25 internal-beep diagnostic"
+	depends on SND_SOC_TLV320AIC32X4
+	help
+	  Add a momentary ALSA control that runs one bounded PRB_P25 internal
+	  beep transaction through the bound codec regmap. This is intended
+	  only for controlled hardware boundary diagnosis and is not a normal
+	  playback feature.
 
 config SND_SOC_TLV320AIC32X4_I2C
 	tristate "Texas Instruments TLV320AIC32x4 audio CODECs - I2C"

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_SND_SOC_MEDIATEK) += common/
+obj-$(CONFIG_SND_SOC_AMZN_MT8163_SPI_AUDIO) += mt8163-amzn-spi/
+obj-$(CONFIG_SND_SOC_MT8163) += mt8163/
 obj-$(CONFIG_SND_SOC_MT2701) += mt2701/
 obj-$(CONFIG_SND_SOC_MT6797) += mt6797/
 obj-$(CONFIG_SND_SOC_MT8173) += mt8173/

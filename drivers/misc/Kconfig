@@ -497,6 +497,37 @@ config VCPU_STALL_DETECTOR
 
 	  If you do not intend to run this kernel as a guest, say N.
 
+config AMZ_PRIVACY
+	bool "Amazon hardware privacy control"
+	depends on OF && GPIOLIB && INPUT=y
+	help
+	  Enable the Amazon hardware privacy GPIO control used by
+	  Radar-Puffin devices. The driver retains the vendor sysfs
+	  interface for privacy state, trigger, timer, shutdown-dialog,
+	  and power-button state, and adds mute_lamp: a control that
+	  lights the mute button's lamp from a software mute without
+	  entering the privacy latch.
+
+config MTK_MT8163_CONSYS_HOST
+	bool "Kernel support for the out-of-tree MT8163 CONSYS stack"
+	depends on ARM && ARCH_MEDIATEK && OF && HAS_IOMEM
+	depends on NET && RFKILL && MODULES
+	select CFG80211
+	select CRC32
+	select FW_LOADER
+	select ZLIB_DEFLATE
+	select WIRELESS
+	select WIRELESS_EXT
+	select WEXT_CORE
+	select WEXT_PROC
+	select WEXT_PRIV
+	help
+	  Build in the kernel infrastructure needed by the MT8163 CONSYS
+	  WMT/STP/BTIF, Wi-Fi and Bluetooth modules, which are maintained
+	  outside this tree in LibreEcho-mt8163-connectivity.  Several of
+	  these symbols are not user-selectable, so an external module
+	  cannot request them itself.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

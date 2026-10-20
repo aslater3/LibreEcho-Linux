@@ -16,6 +16,7 @@
 #include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/platform_data/leds-lp55xx.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/gpio/consumer.h>
 
@@ -438,6 +439,22 @@ int lp55xx_init_device(struct lp55xx_chip *chip)
 	if (!pdata || !cfg)
 		return -EINVAL;
 
+	chip->vdd = devm_regulator_get_optional(dev, "vdd");
+	if (IS_ERR(chip->vdd)) {
+		ret = PTR_ERR(chip->vdd);
+		if (ret == -ENODEV)
+			chip->vdd = NULL;
+		else
+			return dev_err_probe(dev, ret,
+					     "failed to get VDD supply\n");
+	}
+	if (chip->vdd) {
+		ret = regulator_enable(chip->vdd);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to enable VDD supply\n");
+	}
+
 	if (pdata->enable_gpiod) {
 		gpiod_direction_output(pdata->enable_gpiod, 0);
 
@@ -459,7 +476,7 @@ int lp55xx_init_device(struct lp55xx_chip *chip)
 	ret = lp55xx_detect_device(chip);
 	if (ret) {
 		dev_err(dev, "device detection err: %d\n", ret);
-		goto err;
+		goto err_supply;
 	}
 
 	/* chip specific initialization */
@@ -473,7 +490,10 @@ int lp55xx_init_device(struct lp55xx_chip *chip)
 
 err_post_init:
 	lp55xx_deinit_device(chip);
-err:
+	return ret;
+err_supply:
+	if (chip->vdd)
+		regulator_disable(chip->vdd);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(lp55xx_init_device);
@@ -487,6 +507,9 @@ void lp55xx_deinit_device(struct lp55xx_chip *chip)
 
 	if (pdata->enable_gpiod)
 		gpiod_set_value(pdata->enable_gpiod, 0);
+
+	if (chip->vdd)
+		regulator_disable(chip->vdd);
 }
 EXPORT_SYMBOL_GPL(lp55xx_deinit_device);
 

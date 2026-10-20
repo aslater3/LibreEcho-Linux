@@ -1,0 +1,789 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * Amazon hardware privacy control
+ *
+ * This is a descriptor-based port of the vendor amz_priv driver. In
+ * particular, the legacy "gpios" property is driven as a raw electrical
+ * level: its active-low flag was ignored by of_get_gpio()/gpio_set_value().
+ * The Radar-Puffin bright-state line replaces the vendor mute-gpio and uses
+ * its declared polarity, matching the old callback's inverse output.
+ */
+
+#include <linux/amz_priv.h>
+#include <linux/atomic.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/gpio/consumer.h>
+#include <linux/input.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/property.h>
+#include <linux/sysfs.h>
+#include <linux/string.h>
+#include <linux/workqueue.h>
+
+#define DRIVER_NAME "amz_privacy"
+
+struct amz_privacy {
+	struct device *dev;
+	struct gpio_desc *privacy_gpio;
+	struct gpio_desc *bright_state_gpio;
+	struct gpio_desc *public_hw_state_gpio;
+	struct priv_cb_data *callbacks[PRIV_CB_MAX];
+	bool disabled;
+	bool hw_latch;
+	bool input_handler_registered;
+	bool mute_lamp;
+	bool suppress_lamp_restore;
+	int privacy_mode_status;
+	int shutdown_dialog_status;
+	int cur_priv;
+	int cur_timer_on;
+};
+
+/*
+ * The vendor ABI is singleton-based and exports trigger/callback functions.
+ * Keep the singleton lock held across an operation so driver unbind cannot
+ * invalidate the descriptor pointers underneath an exported call.
+ */
+static DEFINE_MUTEX(amz_privacy_lock);
+static struct amz_privacy *amz_privacy_data;
+
+static void amz_privacy_notify(struct amz_privacy *priv, const char *name)
+{
+	sysfs_notify(&priv->dev->kobj, NULL, name);
+}
+
+static void amz_privacy_set_bright_state(struct amz_privacy *priv, int on)
+{
+	if (priv->bright_state_gpio)
+		gpiod_set_value_cansleep(priv->bright_state_gpio, on);
+}
+
+/*
+ * The mute indication.
+ *
+ * Radar-Puffin has no lamp line of its own: the vendor mute-gpio is absent from
+ * this board's device tree and this is the line that replaced it, so the lamp
+ * the physical button lights is what a privacy transition drives. A software
+ * mute can therefore only light that lamp by driving the same pair of lines, and
+ * that is what this does on purpose -- a mute from the web UI lights the lamp
+ * the button lights, and the microphones are cut in hardware while it is on.
+ *
+ * What it deliberately does not do is enter the latch: the state machine, the
+ * debounce timer and the registered callbacks are untouched, so the physical
+ * button keeps its authority and, unlike privacy_trigger, this can clear what it
+ * set. While the latch is engaged the button owns the lamp and writes here are
+ * refused, so software cannot put out a lamp the user asked for physically.
+ */
+static void amz_privacy_set_mute_lamp(struct amz_privacy *priv, int on)
+{
+	on &= 1;
+	gpiod_set_raw_value_cansleep(priv->privacy_gpio, on);
+	amz_privacy_set_bright_state(priv, on);
+	priv->mute_lamp = !!on;
+}
+
+static void amz_privacy_call_callbacks(struct amz_privacy *priv, int on)
+{
+	int i;
+
+	/* This gating is part of the vendor hardware-latch behavior. */
+	if (!priv->hw_latch)
+		return;
+
+	for (i = 0; i < PRIV_CB_MAX; i++) {
+		struct priv_cb_data *pcd = priv->callbacks[i];
+
+		if (pcd)
+			pcd->cb(pcd->cb_priv_data, on);
+	}
+}
+
+static int amz_privacy_assert_latch(struct amz_privacy *priv)
+{
+	unsigned int retries = 100;
+	int value;
+
+	if (!priv->hw_latch)
+		return 0;
+
+	/*
+	 * Preserve the vendor latch dance: wait until PUBLIC_HW is private
+	 * (raw low), then release the privacy trigger (raw low).
+	 */
+	while (retries--) {
+		value = gpiod_get_raw_value_cansleep(priv->public_hw_state_gpio);
+		if (value < 0)
+			return value;
+		if (!value)
+			break;
+		usleep_range(10000, 11000);
+	}
+	if (value)
+		return dev_err_probe(priv->dev, -ETIMEDOUT,
+				     "privacy latch acknowledgement timed out\n");
+
+	gpiod_set_raw_value_cansleep(priv->privacy_gpio, 0);
+	return 0;
+}
+
+static int __amz_priv_trigger(struct amz_privacy *priv, int on)
+{
+	int ret;
+	int keep;
+
+	if (priv->disabled)
+		return 0;
+
+	on &= 1;
+
+	/*
+	 * The indication line is shared with a software mute that is still on, and
+	 * releasing the latch must not glitch it -- and the microphone cut with it
+	 * -- off and straight back on through the sleepable GPIO calls. The mute
+	 * request therefore decides the line, except when the caller is suppressing
+	 * the request on purpose (entering the shutdown dialog): then the caller's
+	 * level is the one to drive.
+	 */
+	keep = (!on && priv->mute_lamp && !priv->suppress_lamp_restore);
+	if (!keep) {
+		/* Preserve gpio_set_value() electrical semantics from the old driver. */
+		gpiod_set_raw_value_cansleep(priv->privacy_gpio, on);
+
+		/*
+		 * Radar-Puffin names the old inverse mute output "bright-state".
+		 * Descriptor polarity turns logical privacy-on into its active-low
+		 * electrical level.
+		 */
+		amz_privacy_set_bright_state(priv, on);
+	}
+
+	amz_privacy_call_callbacks(priv, on);
+
+	if (on) {
+		ret = amz_privacy_assert_latch(priv);
+		if (ret)
+			return ret;
+	}
+
+	/* State changes only after the hardware-latch assertion completes. */
+	priv->cur_priv = on;
+	amz_privacy_notify(priv, "privacy_state");
+
+	return 0;
+}
+
+/*
+ * The mute key toggles privacy, and it has to be done here rather than in
+ * userspace: privacy_trigger deliberately refuses to let software leave
+ * privacy, so that no program can silently un-mute a microphone. A physical
+ * key press is the one thing that legitimately may, and only the kernel can
+ * tell a real key press from a write by a process.
+ *
+ * amz_priv_trigger() was already exported for exactly this caller; nothing in
+ * this tree provided one, which is why the button lit privacy on and then
+ * could never turn it off again.
+ *
+ * The toggle cannot run in the handler itself. input_pass_values() calls
+ * handler->event() with dev->event_lock held and interrupts disabled, so this
+ * is atomic context, and every step of a toggle sleeps: amz_privacy_lock is a
+ * mutex, the lines are driven with the gpiod_*_cansleep() family, and
+ * amz_privacy_assert_latch() waits for the hardware with usleep_range(). Count
+ * the press here and let a workqueue do the work.
+ *
+ * Presses are counted rather than flagged because schedule_work() on an
+ * already-queued item does nothing. A second press arriving before the first
+ * had been handled would be swallowed, and since this is a toggle, a swallowed
+ * press leaves privacy in the opposite state to the one the user asked for.
+ */
+static atomic_t amz_privacy_pending_presses = ATOMIC_INIT(0);
+
+static void amz_privacy_toggle_work(struct work_struct *work)
+{
+	struct amz_privacy *priv;
+	int pending = atomic_xchg(&amz_privacy_pending_presses, 0);
+
+	if (pending <= 0)
+		return;
+
+	mutex_lock(&amz_privacy_lock);
+	priv = amz_privacy_data;
+	if (priv)
+		while (pending--)
+			(void)__amz_priv_trigger(priv, !priv->cur_priv);
+	mutex_unlock(&amz_privacy_lock);
+}
+
+static DECLARE_WORK(amz_privacy_toggle, amz_privacy_toggle_work);
+
+static void amz_privacy_input_event(struct input_handle *handle,
+				    unsigned int type, unsigned int code,
+				    int value)
+{
+	if (type != EV_KEY || code != KEY_MUTE || value != 1)
+		return;
+
+	/*
+	 * Counted before queueing: if the worker is between its atomic_xchg()
+	 * and finishing, this press is not lost, because the item is no longer
+	 * queued and schedule_work() will run it again.
+	 */
+	atomic_inc(&amz_privacy_pending_presses);
+	schedule_work(&amz_privacy_toggle);
+}
+
+static int amz_privacy_input_connect(struct input_handler *handler,
+				     struct input_dev *dev,
+				     const struct input_device_id *id)
+{
+	struct input_handle *handle;
+	int ret;
+
+	if (!dev->name || strcmp(dev->name, "mtk-pmic-keys"))
+		return -ENODEV;
+
+	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
+	if (!handle)
+		return -ENOMEM;
+
+	handle->dev = dev;
+	handle->handler = handler;
+	handle->name = "amz_privacy";
+
+	ret = input_register_handle(handle);
+	if (ret)
+		goto err_free;
+	ret = input_open_device(handle);
+	if (ret)
+		goto err_unregister;
+	return 0;
+
+err_unregister:
+	input_unregister_handle(handle);
+err_free:
+	kfree(handle);
+	return ret;
+}
+
+static void amz_privacy_input_disconnect(struct input_handle *handle)
+{
+	input_close_device(handle);
+	input_unregister_handle(handle);
+	kfree(handle);
+}
+
+/* Only devices that actually carry KEY_MUTE, so this does not open every
+   keyboard on the system. */
+static const struct input_device_id amz_privacy_ids[] = {
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT |
+				 INPUT_DEVICE_ID_MATCH_KEYBIT,
+		.evbit = { BIT_MASK(EV_KEY) },
+		.keybit = { [BIT_WORD(KEY_MUTE)] = BIT_MASK(KEY_MUTE) },
+	},
+	{ },
+};
+MODULE_DEVICE_TABLE(input, amz_privacy_ids);
+
+static struct input_handler amz_privacy_input_handler = {
+	.event		= amz_privacy_input_event,
+	.connect	= amz_privacy_input_connect,
+	.disconnect	= amz_privacy_input_disconnect,
+	.name		= "amz_privacy",
+	.id_table	= amz_privacy_ids,
+};
+
+int amz_priv_trigger(int on)
+{
+	struct amz_privacy *priv;
+	int ret;
+
+	mutex_lock(&amz_privacy_lock);
+	priv = amz_privacy_data;
+	if (!priv) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ret = __amz_priv_trigger(priv, on);
+out:
+	mutex_unlock(&amz_privacy_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(amz_priv_trigger);
+
+int amz_priv_timer_sysfs(int on)
+{
+	struct amz_privacy *priv;
+	int ret = 0;
+
+	mutex_lock(&amz_privacy_lock);
+	priv = amz_privacy_data;
+	if (!priv) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	if (priv->disabled)
+		goto out;
+
+	priv->cur_timer_on = on;
+	if (on)
+		priv->privacy_mode_status = -1;
+	amz_privacy_notify(priv, "privacy_timer_on");
+out:
+	mutex_unlock(&amz_privacy_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(amz_priv_timer_sysfs);
+
+int amz_priv_cb_reg(struct priv_cb_data *pcd)
+{
+	struct amz_privacy *priv;
+	int ret = 0;
+
+	if (!pcd || !pcd->cb || pcd->cb_dest >= PRIV_CB_MAX)
+		return -EINVAL;
+
+	mutex_lock(&amz_privacy_lock);
+	priv = amz_privacy_data;
+	if (!priv) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	if (!priv->callbacks[pcd->cb_dest])
+		priv->callbacks[pcd->cb_dest] = pcd;
+out:
+	mutex_unlock(&amz_privacy_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(amz_priv_cb_reg);
+
+static ssize_t privacy_trigger_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", priv->privacy_mode_status);
+}
+
+static ssize_t privacy_trigger_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+	int value;
+
+	if (kstrtoint(buf, 10, &value))
+		return -EPERM;
+
+	mutex_lock(&amz_privacy_lock);
+	priv->privacy_mode_status = value;
+
+	if (value == priv->cur_priv) {
+		priv->cur_timer_on = 0;
+		amz_privacy_notify(priv, "privacy_timer_on");
+		goto out;
+	}
+
+	/*
+	 * Userspace may enter privacy directly, but privacy_trigger must not
+	 * permit software to leave privacy. Value 2 only cancels debounce.
+	 */
+	if (value == 1 && !priv->cur_timer_on) {
+		__amz_priv_trigger(priv, 1);
+		priv->cur_timer_on = 0;
+		amz_privacy_notify(priv, "privacy_timer_on");
+	} else if (value == 2) {
+		priv->cur_timer_on = 0;
+		amz_privacy_notify(priv, "privacy_timer_on");
+	}
+out:
+	mutex_unlock(&amz_privacy_lock);
+	return count;
+}
+
+static ssize_t privacy_state_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", priv->cur_priv);
+}
+
+static ssize_t privacy_timer_on_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", priv->cur_timer_on);
+}
+
+static ssize_t shutdown_dialog_state_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", priv->shutdown_dialog_status);
+}
+
+static ssize_t shutdown_dialog_state_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+	int value;
+
+	if (kstrtoint(buf, 10, &value))
+		return -EPERM;
+
+	mutex_lock(&amz_privacy_lock);
+	priv->shutdown_dialog_status = value;
+	if (value == 1) {
+		/*
+		 * The outputs are deasserted on purpose here, and the software mute
+		 * request is left alone: suppressing it for this call keeps the
+		 * deassertion from being undone, and keeping it means cancelling the
+		 * dialog can put the lamp back instead of losing the mute.
+		 */
+		priv->suppress_lamp_restore = true;
+		__amz_priv_trigger(priv, 0);
+		priv->suppress_lamp_restore = false;
+		priv->disabled = true;
+	} else {
+		priv->disabled = false;
+		/* The software mute outlived the dialog: light its lamp again. */
+		if (priv->mute_lamp && !priv->cur_priv)
+			amz_privacy_set_mute_lamp(priv, 1);
+	}
+	mutex_unlock(&amz_privacy_lock);
+
+	return count;
+}
+
+static ssize_t power_button_state_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+	int value;
+
+	if (!priv->bright_state_gpio)
+		return -ENODEV;
+
+	/* The legacy file reports the electrical value, not logical polarity. */
+	value = gpiod_get_raw_value_cansleep(priv->bright_state_gpio);
+	if (value < 0)
+		return value;
+
+	return sysfs_emit(buf, "%d\n", value);
+}
+
+static DEVICE_ATTR(privacy_trigger, 0664, privacy_trigger_show,
+		   privacy_trigger_store);
+static DEVICE_ATTR_RO(privacy_state);
+static DEVICE_ATTR_RO(privacy_timer_on);
+static DEVICE_ATTR(shutdown_dialog_state, 0664,
+		   shutdown_dialog_state_show, shutdown_dialog_state_store);
+static DEVICE_ATTR(power_button_state, 0664, power_button_state_show, NULL);
+
+/*
+ * The only userspace control over the mute indication, and the only way a
+ * software mute can light the button's lamp. 1 lights it, 0 clears it; while the
+ * hardware latch is engaged the button owns the lamp and 0 is refused.
+ */
+static ssize_t mute_lamp_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+
+	/* Not supported on a latched board: a value here would claim a lamp this
+	   control cannot drive. */
+	if (priv->hw_latch)
+		return -EOPNOTSUPP;
+
+	return sysfs_emit(buf, "%d\n", priv->mute_lamp ? 1 : 0);
+}
+
+static ssize_t mute_lamp_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct amz_privacy *priv = dev_get_drvdata(dev);
+	bool on;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+
+	mutex_lock(&amz_privacy_lock);
+	if (priv->hw_latch) {
+		/*
+		 * Boards with the hardware latch run privacy as a handshake: assert,
+		 * wait for the acknowledgement, and deassert. This control performs
+		 * none of that, so driving the request line here could enter or hold
+		 * hardware privacy while cur_priv stayed 0 and the callbacks were never
+		 * told, and a release would not unwind it. The lamp control is for
+		 * boards whose privacy indication is a plain output -- Radar-Puffin.
+		 */
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (priv->disabled) {
+		/*
+		 * The shutdown dialog owns the outputs, so the physical change is
+		 * refused -- but the request itself is recorded, or the exit path would
+		 * light the lamp for a mute state that has since changed.
+		 */
+		priv->mute_lamp = !!on;
+		ret = -EBUSY;
+		goto out;
+	}
+	if (priv->cur_priv && !on) {
+		/*
+		 * The button owns the lamp while its latch is engaged, so the physical
+		 * deassertion is deferred -- but the request itself is recorded, or the
+		 * release would re-assert a lamp for a software mute that has since been
+		 * turned off, leaving the lamp lit and the microphones cut.
+		 */
+		priv->mute_lamp = false;
+		ret = -EBUSY;
+		goto out;
+	}
+	amz_privacy_set_mute_lamp(priv, on);
+	amz_privacy_notify(priv, "mute_lamp");
+	ret = count;
+out:
+	mutex_unlock(&amz_privacy_lock);
+	return ret;
+}
+
+/*
+ * Group-writable like the driver's other controls: the mute daemon may hold
+ * access through group ownership rather than running as root, and a 0644
+ * attribute would then refuse the write that lights the lamp.
+ */
+static DEVICE_ATTR(mute_lamp, 0664, mute_lamp_show, mute_lamp_store);
+
+static struct attribute *amz_privacy_attrs[] = {
+	&dev_attr_privacy_trigger.attr,
+	&dev_attr_privacy_state.attr,
+	&dev_attr_privacy_timer_on.attr,
+	&dev_attr_shutdown_dialog_state.attr,
+	&dev_attr_power_button_state.attr,
+	&dev_attr_mute_lamp.attr,
+	NULL,
+};
+
+static const struct attribute_group amz_privacy_group = {
+	.attrs = amz_privacy_attrs,
+};
+
+static struct gpio_desc *
+amz_privacy_get_optional_gpio(struct device *dev, const char *property,
+			      enum gpiod_flags flags, const char *label)
+{
+	struct gpio_desc *gpio;
+
+	gpio = devm_gpiod_get_from_of_node(dev, dev->of_node, property, 0,
+					   flags, label);
+	if (PTR_ERR(gpio) == -ENOENT)
+		return NULL;
+
+	return gpio;
+}
+
+static int amz_privacy_preserve_output(struct gpio_desc *gpio)
+{
+	int value;
+
+	value = gpiod_get_raw_value_cansleep(gpio);
+	if (value < 0)
+		return value;
+
+	return gpiod_direction_output_raw(gpio, value);
+}
+
+static int amz_privacy_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct amz_privacy *priv;
+	bool initially_private = false;
+	u32 hw_latch = 0;
+	int ret;
+
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->dev = dev;
+	device_property_read_u32(dev, "hw_latch", &hw_latch);
+	priv->hw_latch = !!hw_latch;
+
+	priv->privacy_gpio = devm_gpiod_get(dev, NULL, GPIOD_ASIS);
+	if (IS_ERR(priv->privacy_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->privacy_gpio),
+				     "failed to get privacy GPIO\n");
+
+	ret = amz_privacy_preserve_output(priv->privacy_gpio);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to configure privacy GPIO\n");
+
+	ret = gpiod_get_raw_value_cansleep(priv->privacy_gpio);
+	if (ret < 0)
+		return dev_err_probe(dev, ret,
+				     "failed to read privacy GPIO\n");
+	priv->cur_priv = !!ret;
+
+	priv->bright_state_gpio =
+		amz_privacy_get_optional_gpio(dev, "bright-state-gpio",
+					      GPIOD_ASIS,
+					      "amz-bright-state");
+	if (IS_ERR(priv->bright_state_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->bright_state_gpio),
+				     "failed to get bright-state GPIO\n");
+
+	/* Also accept the property used by the supplied vendor source. */
+	if (!priv->bright_state_gpio)
+		priv->bright_state_gpio =
+			amz_privacy_get_optional_gpio(dev, "mute-gpio",
+						      GPIOD_ASIS,
+						      "amz-mute");
+	if (IS_ERR(priv->bright_state_gpio))
+		return dev_err_probe(dev, PTR_ERR(priv->bright_state_gpio),
+				     "failed to get mute GPIO\n");
+
+	if (priv->bright_state_gpio) {
+		ret = amz_privacy_preserve_output(priv->bright_state_gpio);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to configure bright-state GPIO\n");
+	}
+
+	if (priv->hw_latch) {
+		priv->public_hw_state_gpio =
+			amz_privacy_get_optional_gpio(dev,
+						      "public_hw_st-gpio",
+						      GPIOD_IN,
+						      "amz-public-hw-state");
+		if (IS_ERR(priv->public_hw_state_gpio))
+			return dev_err_probe(dev,
+					     PTR_ERR(priv->public_hw_state_gpio),
+					     "failed to get public-hw GPIO\n");
+		if (!priv->public_hw_state_gpio)
+			return dev_err_probe(dev, -EINVAL,
+					     "hw_latch requires public_hw_st-gpio\n");
+
+		ret = gpiod_get_raw_value_cansleep(priv->public_hw_state_gpio);
+		if (ret < 0)
+			return dev_err_probe(dev, ret,
+					     "failed to read public-hw GPIO\n");
+		initially_private = !ret;
+	}
+
+	platform_set_drvdata(pdev, priv);
+
+	mutex_lock(&amz_privacy_lock);
+	if (amz_privacy_data) {
+		mutex_unlock(&amz_privacy_lock);
+		return dev_err_probe(dev, -EBUSY,
+				     "only one privacy device is supported\n");
+	}
+	amz_privacy_data = priv;
+	mutex_unlock(&amz_privacy_lock);
+
+	ret = sysfs_create_group(&dev->kobj, &amz_privacy_group);
+	if (ret) {
+		mutex_lock(&amz_privacy_lock);
+		amz_privacy_data = NULL;
+		mutex_unlock(&amz_privacy_lock);
+		return dev_err_probe(dev, ret,
+				     "failed to create privacy attributes\n");
+	}
+
+	if (initially_private) {
+		mutex_lock(&amz_privacy_lock);
+		ret = __amz_priv_trigger(priv, 1);
+		mutex_unlock(&amz_privacy_lock);
+		if (ret) {
+			sysfs_remove_group(&dev->kobj, &amz_privacy_group);
+			mutex_lock(&amz_privacy_lock);
+			amz_privacy_data = NULL;
+			mutex_unlock(&amz_privacy_lock);
+			return dev_err_probe(dev, ret,
+					     "failed to restore latched privacy\n");
+		}
+	}
+
+	/*
+	 * Registered last: by this point the device can accept a toggle. A
+	 * failure here is not fatal -- privacy still works from sysfs and the
+	 * boot state is correct, only the key stops toggling it -- so say so
+	 * and carry on rather than refusing to probe.
+	 */
+	ret = input_register_handler(&amz_privacy_input_handler);
+	if (ret)
+		dev_warn(dev, "mute key handler not registered (%d); the button cannot leave privacy\n",
+			 ret);
+	else
+		priv->input_handler_registered = true;
+
+	dev_info(dev, "registered (hardware latch %s, mute key %s)\n",
+		 priv->hw_latch ? "enabled" : "disabled",
+		 priv->input_handler_registered ? "bound" : "unbound");
+	return 0;
+}
+
+static int amz_privacy_remove(struct platform_device *pdev)
+{
+	struct amz_privacy *priv = platform_get_drvdata(pdev);
+
+	if (priv->input_handler_registered)
+		input_unregister_handler(&amz_privacy_input_handler);
+
+	/*
+	 * The handler is gone, so no further presses can be counted; drain the
+	 * ones already queued before the singleton is cleared, and drop any
+	 * that were counted but never ran so a later probe does not inherit
+	 * them.
+	 */
+	cancel_work_sync(&amz_privacy_toggle);
+	atomic_set(&amz_privacy_pending_presses, 0);
+
+	sysfs_remove_group(&pdev->dev.kobj, &amz_privacy_group);
+
+	mutex_lock(&amz_privacy_lock);
+	if (amz_privacy_data == priv)
+		amz_privacy_data = NULL;
+	mutex_unlock(&amz_privacy_lock);
+
+	return 0;
+}
+
+static const struct of_device_id amz_privacy_of_match[] = {
+	{ .compatible = "amazon,amz-privacy" },
+	/* Name-only fallback for unmodified vendor device trees. */
+	{ .name = "amz_privacy" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, amz_privacy_of_match);
+
+static struct platform_driver amz_privacy_driver = {
+	.probe = amz_privacy_probe,
+	.remove = amz_privacy_remove,
+	.driver = {
+		.name = DRIVER_NAME,
+		.of_match_table = amz_privacy_of_match,
+	},
+};
+module_platform_driver(amz_privacy_driver);
+
+MODULE_AUTHOR("Amazon Technologies, Inc.; LibreEcho contributors");
+MODULE_DESCRIPTION("Amazon Radar-Puffin hardware privacy control");
+MODULE_LICENSE("GPL");
