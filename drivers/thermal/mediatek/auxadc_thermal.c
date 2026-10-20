@@ -118,6 +118,18 @@
 /* Valid temperatures range */
 #define MT8173_TEMP_MIN		-20000
 #define MT8173_TEMP_MAX		150000
+/* MT8163 uses the same V1 controller and efuse format with three banks. */
+#define MT8163_TS1	0
+#define MT8163_TS2	1
+#define MT8163_TS3	2
+#define MT8163_TS4	3
+#define MT8163_TSABB	4
+#define MT8163_TEMP_AUXADC_CHANNEL	11
+#define MT8163_NUM_SENSORS		5
+#define MT8163_NUM_ZONES		3
+#define MT8163_NUM_SENSORS_PER_ZONE	4
+#define MT8163_NUM_CONTROLLER		1
+#define MT8163_CALIBRATION		165
 
 /*
  * Layout of the fuses providing the calibration data
@@ -394,6 +406,27 @@ static const int mt8173_vts_index[MT8173_NUM_SENSORS] = {
 	VTS1, VTS2, VTS3, VTS4, VTSABB
 };
 
+static const int mt8163_bank_data[MT8163_NUM_ZONES][4] = {
+	{ MT8163_TS1, MT8163_TS2 },
+	{ MT8163_TS3, MT8163_TSABB },
+	{ MT8163_TS4, MT8163_TS2, MT8163_TS3, MT8163_TSABB },
+};
+
+static const int mt8163_msr[MT8163_NUM_SENSORS_PER_ZONE] = {
+	TEMP_MSR0, TEMP_MSR1, TEMP_MSR2, TEMP_MSR3
+};
+
+static const int mt8163_adcpnp[MT8163_NUM_SENSORS_PER_ZONE] = {
+	TEMP_ADCPNP0, TEMP_ADCPNP1, TEMP_ADCPNP2, TEMP_ADCPNP3
+};
+
+static const int mt8163_mux_values[MT8163_NUM_SENSORS] = { 0, 1, 2, 3, 16 };
+static const int mt8163_tc_offset[MT8163_NUM_CONTROLLER] = { 0x0, };
+
+static const int mt8163_vts_index[MT8163_NUM_SENSORS] = {
+	VTS1, VTS2, VTS3, VTS4, VTSABB
+};
+
 /* MT2701 thermal sensor data */
 static const int mt2701_bank_data[MT2701_NUM_SENSORS] = {
 	MT2701_TS1, MT2701_TS2, MT2701_TSABB
@@ -508,6 +541,33 @@ static const struct mtk_thermal_data mt8173_thermal_data = {
 	.msr = mt8173_msr,
 	.adcpnp = mt8173_adcpnp,
 	.sensor_mux_values = mt8173_mux_values,
+	.version = MTK_THERMAL_V1,
+};
+
+static const struct mtk_thermal_data mt8163_thermal_data = {
+	.auxadc_channel = MT8163_TEMP_AUXADC_CHANNEL,
+	.num_banks = MT8163_NUM_ZONES,
+	.num_sensors = MT8163_NUM_SENSORS,
+	.vts_index = mt8163_vts_index,
+	.cali_val = MT8163_CALIBRATION,
+	.num_controller = MT8163_NUM_CONTROLLER,
+	.controller_offset = mt8163_tc_offset,
+	.need_switch_bank = true,
+	.bank_data = {
+		{
+			.num_sensors = 2,
+			.sensors = mt8163_bank_data[0],
+		}, {
+			.num_sensors = 2,
+			.sensors = mt8163_bank_data[1],
+		}, {
+			.num_sensors = 4,
+			.sensors = mt8163_bank_data[2],
+		},
+	},
+	.msr = mt8163_msr,
+	.adcpnp = mt8163_adcpnp,
+	.sensor_mux_values = mt8163_mux_values,
 	.version = MTK_THERMAL_V1,
 };
 
@@ -1133,6 +1193,10 @@ out:
 }
 
 static const struct of_device_id mtk_thermal_of_match[] = {
+	{
+		.compatible = "mediatek,mt8163-thermal",
+		.data = (void *)&mt8163_thermal_data,
+	},
 	{
 		.compatible = "mediatek,mt8173-thermal",
 		.data = (void *)&mt8173_thermal_data,
