@@ -96,6 +96,7 @@ static LP55XX_DEV_ATTR_RW(master_fader##nr, show_master_fader##nr,	\
 
 struct lp55xx_led;
 struct lp55xx_chip;
+struct regulator;
 
 /*
  * struct lp55xx_reg
@@ -190,6 +191,7 @@ struct lp55xx_engine {
  * @engine_idx : Selected engine number
  * @engines    : Engine structure for the device attribute R/W interface
  * @fw         : Firmware data for running a LED pattern
+ * @vdd        : Optional shared hardware-enable/supply regulator
  */
 struct lp55xx_chip {
 	struct i2c_client *cl;
@@ -200,6 +202,7 @@ struct lp55xx_chip {
 	enum lp55xx_engine_index engine_idx;
 	struct lp55xx_engine engines[LP55XX_ENGINE_MAX];
 	const struct firmware *fw;
+	struct regulator *vdd;
 };
 
 /*
