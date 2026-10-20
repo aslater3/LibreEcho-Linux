@@ -257,12 +257,17 @@ class IdmeSourceContractTests(unittest.TestCase):
         self.assertIn("idme_wifi_mfg.u2Part1OwnVersion", branch)
 
     def test_contract_runs_in_the_arm32_ci_runner(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn(
-            "python3 drivers/misc/mediatek/mt8163-connectivity/"
-            "test_idme_factory_mac_contract.py",
-            workflow,
+        # CI runs it directly or through LibreEcho-Linux's contract runner.
+        path = (
+            "drivers/misc/mediatek/mt8163-connectivity/"
+            "test_idme_factory_mac_contract.py"
         )
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        runner = ROOT / "libreecho/run_contract_tests.py"
+        if runner.exists() and "libreecho/run_contract_tests.py" in workflow:
+            self.assertIn(f'"{path}"', runner.read_text(encoding="utf-8"))
+        else:
+            self.assertIn(f"python3 {path}", workflow)
 
 
 if __name__ == "__main__":
