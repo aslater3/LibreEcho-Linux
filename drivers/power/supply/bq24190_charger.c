@@ -752,8 +752,10 @@ static int bq24190_set_config(struct bq24190_dev_info *bdi)
 	u8 v;
 
 	ret = bq24190_read(bdi, BQ24190_REG_CTTC, &v);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(bdi->dev, "set-config register=CTTC read failed: %d\n", ret);
 		return ret;
+	}
 
 	bdi->watchdog = ((v & BQ24190_REG_CTTC_WATCHDOG_MASK) >>
 					BQ24190_REG_CTTC_WATCHDOG_SHIFT);
@@ -769,8 +771,10 @@ static int bq24190_set_config(struct bq24190_dev_info *bdi)
 	v &= ~BQ24190_REG_CTTC_WATCHDOG_MASK;
 
 	ret = bq24190_write(bdi, BQ24190_REG_CTTC, v);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(bdi->dev, "set-config register=CTTC write failed: %d\n", ret);
 		return ret;
+	}
 
 	if (bdi->sys_min) {
 		v = bdi->sys_min / 100 - 30; // manual section 9.5.1.2, table 9
@@ -1866,8 +1870,11 @@ static int bq24190_check_chip(struct bq24190_dev_info *bdi)
 			BQ24190_REG_VPRS_PN_MASK,
 			BQ24190_REG_VPRS_PN_SHIFT,
 			&v);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(bdi->dev, "hardware init stage=part-number-read failed: %d\n",
+			ret);
 		return ret;
+	}
 
 	switch (v) {
 	case BQ24190_REG_VPRS_PN_24190:
@@ -1915,14 +1922,23 @@ static int bq24190_hw_init(struct bq24190_dev_info *bdi)
 		return ret;
 
 	ret = bq24190_register_reset(bdi);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(bdi->dev, "hardware init stage=register-reset failed: %d\n",
+			ret);
 		return ret;
+	}
 
 	ret = bq24190_set_config(bdi);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(bdi->dev, "hardware init stage=set-config failed: %d\n", ret);
 		return ret;
+	}
 
-	return bq24190_read(bdi, BQ24190_REG_SS, &bdi->ss_reg);
+	ret = bq24190_read(bdi, BQ24190_REG_SS, &bdi->ss_reg);
+	if (ret < 0)
+		dev_err(bdi->dev, "hardware init stage=status-read failed: %d\n", ret);
+
+	return ret;
 }
 
 static int bq24190_get_config(struct bq24190_dev_info *bdi)
@@ -2152,7 +2168,7 @@ static int bq24190_probe(struct i2c_client *client)
 
 	ret = bq24190_hw_init(bdi);
 	if (ret < 0) {
-		dev_err(dev, "Hardware init failed\n");
+		dev_err(dev, "Hardware init failed: %d\n", ret);
 		goto out_charger;
 	}
 
