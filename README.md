@@ -1,19 +1,62 @@
-# LibreEcho Linux 6.1 for MT8163
+# LibreEcho Linux for MT8163
 
-This repository is the current standalone Linux 6.1 kernel source for LibreEcho
-MT8163 targets. It is intentionally separate from `LibreEcho-Platform`, which
+This repository is the Linux kernel source for LibreEcho MT8163 targets, kept
+on real upstream stable history. It is intentionally separate from
+`LibreEcho-Platform`, which
 owns ARM32 product tooling, initramfs, feature packaging, OTA verification, and
 the historical 3.18 compatibility tree.
 
-## Provenance
+> **Status:** this repository replaces
+> [LibreEcho-Linux-6.1](https://github.com/aslater3/LibreEcho-Linux-6.1), which
+> is a flat snapshot without upstream history
+> ([LibreEcho-Linux-6.1#53](https://github.com/aslater3/LibreEcho-Linux-6.1/issues/53)).
+> The production pipeline still builds from LibreEcho-Linux-6.1 until the build
+> is migrated here and the out-of-tree connectivity modules pass hardware
+> acceptance.
 
-- Base kernel: Linux 6.1.178
-- Base commit: `dc5c83b7f5f83ea99aea5c771b1ec77458263a15`
-- Product baseline: `main`
-- Upstream origin: `https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git`
-- Current PRD kernel baseline: `2aaa8bfae1cc7c9aed5afe0fbe9a8e6abcbc6872`
-- The public `main` branch is a clean source baseline. Post-baseline fixes are
-  developed on review branches until they are verified and merged.
+## Provenance and layout
+
+- Upstream: `https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git`
+- Branch point: `v6.1.178` (`dc5c83b7f5f83ea99aea5c771b1ec77458263a15`)
+- `main` is `v6.1.178` plus the LibreEcho commits, one per subsystem, replayed
+  from LibreEcho-Linux-6.1 `ac890a53b229`. The replayed tree matches that
+  snapshot except for the MT8163 connectivity stack (below), unreferenced
+  stale copies under `arch/arm/boot/dts/mediatek/`, and upstream dotfiles
+  (`.kunitconfig`, `.yamllint`, `tools/testing/selftests/arm64/tags`) that
+  were lost when the snapshot was imported.
+- The MT8163 CONSYS connectivity stack (WMT/STP/BTIF, Wi-Fi, Bluetooth; about
+  213k lines of vendor code) is built out of tree from
+  [LibreEcho-mt8163-connectivity](https://github.com/aslater3/LibreEcho-mt8163-connectivity)
+  at the revision pinned in `libreecho/connectivity.json`. This tree keeps only
+  the kernel hooks it uses: `CONFIG_MTK_MT8163_CONSYS_HOST`,
+  `HCI_QUIRK_DEFERRED_SETUP` and the wext-core cfg80211 fallback.
+
+To list the LibreEcho changes:
+
+```sh
+git log --first-parent --no-merges v6.1.178..main
+```
+
+## Stable updates
+
+Stable releases are merged, not re-imported:
+
+```sh
+git fetch https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git tag v6.1.N
+git checkout -b fix/linux-6.1.N main
+git merge --no-ff v6.1.N
+```
+
+The merge still needs conflict review, the full ARM32 build and contract
+checks, and hardware acceptance where relevant. Renovate's
+`.github/renovate-upstreams.env` marker remains a review signal only.
+
+## Next LTS canary
+
+`.github/workflows/next-lts-canary.yml` runs `libreecho/next_lts_canary.sh`
+every night. The script replays the LibreEcho commits onto the latest 6.18.y
+release and reports which ones apply cleanly. The connectivity repository runs
+its own nightly compile canary against the same release.
 
 The tree is not a claim that the MT8163 changes are upstream-ready. A clean
 kernel source baseline does not by itself constitute a complete boot image or
@@ -63,6 +106,10 @@ make O=/path/to/kernel-output ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
   LD=arm-linux-gnueabihf-ld.bfd zImage dtbs -j8
 ```
 
+Then build the connectivity modules against that output directory, as described
+in the LibreEcho-mt8163-connectivity README, or let CI do it: `checks.yml`
+publishes them as `libreecho-kernel-<target>-connectivity-modules`.
+
 The final LibreEcho pipeline remains the authority for the stock-v184 Android
 boot envelope, initramfs, feature payloads, signing, and image verification.
 This repository must not be used to flash a device directly.
@@ -90,6 +137,15 @@ At parity these are copies of the same build outputs. The legacy Radar bundle
 in-tree sources adds a build lane automatically; unknown IDs or missing sources
 fail validation. The build still uses `olddefconfig`, `zImage dtbs`, the existing
 ARMHF GCC/linker flags and no config fragments, preserving Radar's CI recipe.
+
+## Contract tests
+
+The LibreEcho source contract tests sit next to the code they check. Run them
+all with:
+
+```sh
+python3 -B libreecho/run_contract_tests.py
+```
 
 ## MT8163 pstore/ramoops source boundary
 
@@ -123,17 +179,19 @@ remain physical/product integration gates.
 
 ## MT8163 Bluetooth HCI contract
 
-The MT8163 Bluetooth bridge is built into the production kernel. The committed
-`mt8163_arm32_defconfig` explicitly enables the complete closure:
+The MT8163 Bluetooth bridge is the out-of-tree `mt8163_stp_bt` module. The
+committed `mt8163_arm32_defconfig` enables the kernel side:
 
 ```text
 CONFIG_BT=y
 CONFIG_BT_BREDR=y
 CONFIG_BT_LE=y
-CONFIG_MTK_BTIF=y
-CONFIG_MTK_COMBO_BT=y
-CONFIG_MTK_MT8163_BLUEZ_HCI=y
+CONFIG_MODULES=y
+CONFIG_MTK_MT8163_CONSYS_HOST=y
 ```
+
+The BTIF transport and the BlueZ HCI bridge are always built in the
+connectivity modules (see their `compat/consys_config.h`).
 
 The bridge registers `hci0` before userspace WMT preparation is complete. It
 therefore cancels the automatic HCI setup work queued by `hci_register_dev()`

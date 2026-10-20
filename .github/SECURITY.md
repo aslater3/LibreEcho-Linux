@@ -1,6 +1,6 @@
 # Security policy
 
-LibreEcho-Linux-6.1 is part of LibreEcho. Security issues in this repository are handled
+LibreEcho-Linux is part of LibreEcho. Security issues in this repository are handled
 under the [LibreEcho security policy](https://github.com/aslater3/LibreEcho/blob/main/SECURITY.md),
 which sets out supported versions, scope, response targets and disclosure.
 
