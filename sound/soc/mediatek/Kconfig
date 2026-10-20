@@ -5,6 +5,38 @@ config SND_SOC_MEDIATEK
 	tristate
 	select REGMAP_MMIO
 
+config SND_SOC_AMZN_MT8163_SPI_AUDIO
+	tristate "Amazon Radar-Puffin FPGA SPI audio capture"
+	depends on SPI && GPIOLIB && OF
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Enable the FPGA-backed, nine-channel SPI capture interface used by
+	  Amazon Radar-Puffin MT8163 devices.  The driver loads
+	  i2s_to_spi_v34.bin into the FPGA during probe.
+
+config SND_SOC_MT8163
+	tristate "ASoC support for MediaTek MT8163 Radar-Puffin"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on COMMON_CLK && OF
+	select MFD_SYSCON
+	select REGMAP_MMIO
+	help
+	  Enable the MT8163 AFE DL1 memory interface, I2S output and board
+	  master-clock support used by Amazon Radar-Puffin devices.
+
+config SND_SOC_MT8163_RADAR_PUFFIN
+	tristate "ASoC machine driver for Amazon Radar-Puffin"
+	depends on SND_SOC_MT8163
+	depends on SND_SOC_AMZN_MT8163_SPI_AUDIO
+	depends on I2C && SPI
+	select SND_SOC_TLV320AIC32X4_I2C
+	select SND_SOC_TLV320AIC3101_AMAZON
+	select SND_SOC_8_MICS
+	help
+	  Enable the Radar-Puffin sound card with its TLV320AIC32x4 speaker
+	  DAC, aggregate TLV320ADC3101 microphone component and FPGA SPI
+	  capture path.
+
 config SND_SOC_MT2701
 	tristate "ASoC support for Mediatek MT2701 chip"
 	depends on ARCH_MEDIATEK
