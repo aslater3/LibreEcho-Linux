@@ -32,8 +32,9 @@ TESTS = (
     "tools/mt8163_pstore_ramoops_contract_test.py",
     "tools/mt8163_mute_lamp_contract_test.py",
     "tools/mt8163_bluetooth_contract_test.py",
-    "tools/mt8163_wext_cfg80211_contract_test.py",
-    "tools/mt8163_consys_host_contract_test.py",
+    "drivers/misc/mediatek/mt8163-connectivity/test_idme_factory_mac_contract.py",
+    "drivers/misc/mediatek/mt8163-connectivity/test_wext_cfg80211_fallback.py",
+    "drivers/misc/mediatek/mt8163-connectivity/test_wifi_state_reporting_contract.py",
 )
 
 
@@ -53,9 +54,8 @@ def main() -> int:
         str(p.relative_to(ROOT))
         for pattern in ("**/test_*.py", "tools/mt8163_*_test.py")
         for p in ROOT.glob(pattern)
-        # connectivity/ is where CI checks out LibreEcho-mt8163-connectivity.
         if not str(p.relative_to(ROOT)).startswith(
-            ("tools/testing/", "scripts/", "Documentation/", "connectivity/")
+            ("tools/testing/", "scripts/", "Documentation/")
         )
     }
     unlisted = sorted(owned - set(TESTS))

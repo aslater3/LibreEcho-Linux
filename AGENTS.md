@@ -2,8 +2,9 @@
 
 This repository owns the LTS-based Linux kernel, device-tree sources,
 defconfig, and drivers for the LibreEcho target, on upstream stable history.
-The MT8163 connectivity stack is maintained separately in
-LibreEcho-mt8163-connectivity. Read `README.md` before non-trivial work.
+The MT8163 connectivity stack under drivers/misc/mediatek/mt8163-connectivity
+is a git subtree of LibreEcho-mt8163-connectivity (branch linux-6.1-in-tree):
+change it there and update the subtree, rather than editing it here. Read `README.md` before non-trivial work.
 
 Run every source contract test with `python3 -B libreecho/run_contract_tests.py`.
 Add any new contract test to its `TESTS` list; the runner fails on
