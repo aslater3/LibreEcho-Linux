@@ -36,8 +36,20 @@ static void __init mediatek_timer_init(void)
 	timer_probe();
 };
 
+/*
+ * arm_dt_init_cpu_maps() selects the CPU enable-method from DT before
+ * setup_arch() initializes PSCI. setup_arch() normally replaces those ops
+ * with generic PSCI whenever PSCI CPU_ON exists. MT8163 still needs its
+ * mt-boot wrapper for the per-core MTCMOS/reset release after CPU_ON.
+ */
+static bool __init mediatek_smp_init(void)
+{
+	return of_machine_is_compatible("mediatek,mt8163");
+}
+
 static const char * const mediatek_board_dt_compat[] = {
 	"mediatek,mt2701",
+	"mediatek,mt8163",
 	"mediatek,mt6589",
 	"mediatek,mt6592",
 	"mediatek,mt7623",
@@ -50,4 +62,5 @@ static const char * const mediatek_board_dt_compat[] = {
 DT_MACHINE_START(MEDIATEK_DT, "Mediatek Cortex-A7 (Device Tree)")
 	.dt_compat	= mediatek_board_dt_compat,
 	.init_time	= mediatek_timer_init,
+	.smp_init	= mediatek_smp_init,
 MACHINE_END

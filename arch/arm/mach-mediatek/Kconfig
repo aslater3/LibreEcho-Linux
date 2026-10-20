@@ -40,4 +40,9 @@ config MACH_MT8135
 	bool "MediaTek MT8135 SoCs support"
 	default ARCH_MEDIATEK
 
+config MACH_MT8163
+	bool "MediaTek MT8163 SoCs support"
+	default ARCH_MEDIATEK
+	select HAVE_ARM_ARCH_TIMER
+
 endif
