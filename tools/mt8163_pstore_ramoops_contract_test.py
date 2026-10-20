@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
 DEFCONFIG = ROOT / "arch/arm/configs/mt8163_arm32_defconfig"
 WORKFLOW = ROOT / ".github/workflows/checks.yml"
+RUNNER = ROOT / "libreecho/run_contract_tests.py"
 
 
 class Mt8163PstoreRamoopsContractTests(unittest.TestCase):
@@ -70,8 +71,11 @@ class Mt8163PstoreRamoopsContractTests(unittest.TestCase):
                 self.assertIn(f"{symbol}\n", self.defconfig)
 
     def test_contract_is_registered_in_the_pull_request_build(self) -> None:
-        command = "python3 tools/mt8163_pstore_ramoops_contract_test.py"
-        self.assertEqual(self.workflow.count(command), 1)
+        runner = RUNNER.read_text(encoding="utf-8")
+        self.assertEqual(
+            runner.count('"tools/mt8163_pstore_ramoops_contract_test.py"'), 1
+        )
+        self.assertIn("python3 -B libreecho/run_contract_tests.py", self.workflow)
         self.assertIn("name: ARM32 kernel build and regression checks", self.workflow)
 
 

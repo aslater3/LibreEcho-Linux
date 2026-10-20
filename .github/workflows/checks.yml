@@ -111,54 +111,8 @@ jobs:
             gcc-arm-linux-gnueabihf libelf-dev libncurses-dev libssl-dev \
             python3 rsync
 
-      - name: Run MT8163 console diag contract
-        run: python3 drivers/usb/musb/test_mt8163_console_diag_contract.py
-
-      - name: Run MT8163 role-switch contract
-        run: python3 drivers/usb/musb/test_mt8163_role_switch_contract.py
-
-      - name: Run amz_privacy atomic-context contract
-        run: python3 drivers/misc/test_amz_privacy_atomic_context.py
-
-      - name: Run Radar-Puffin keypad contract
-        run: python3 drivers/misc/test_libreecho_radar_puffin_keys.py
-      - name: Run IS31FL32xx LED init contract
-        run: python3 drivers/leds/test_is31fl32xx_init_contract.py
-
-      - name: Run MT8163 MCLK pinctrl contract
-        run: python3 sound/soc/mediatek/mt8163/test_mt8163_mclk_pinctrl_contract.py
-
-      - name: Run MT8163 AFE period IRQ atomic contract
-        run: python3 sound/soc/mediatek/mt8163/test_mt8163_afe_irq_atomic_contract.py
-
-      - name: Run Radar-Puffin PCM volume preservation contract
-        run: python3 sound/soc/mediatek/mt8163/test_radar_puffin_volume_preservation.py
-
-      - name: Run Radar-Puffin speaker codec profile contract
-        run: python3 sound/soc/mediatek/mt8163/test_radar_puffin_speaker_profile.py
-
-      - name: Run MT8163 pstore source contract
-        run: python3 tools/mt8163_pstore_contract_test.py
-
-      - name: Run IDME factory MAC contract
-        run: python3 drivers/misc/mediatek/mt8163-connectivity/test_idme_factory_mac_contract.py
-
-      - name: Run WEXT and cfg80211 regression contract
-        run: python3 drivers/misc/mediatek/mt8163-connectivity/test_wext_cfg80211_fallback.py
-
-      - name: Run Radar-Puffin thermal policy contract
-        run: python3 drivers/thermal/test_amazon_thermistor_policy_contract.py
-      - name: Run Wi-Fi state convergence contract
-        run: python3 drivers/misc/mediatek/mt8163-connectivity/test_wifi_state_reporting_contract.py
-
-      - name: Run pstore ramoops contract
-        run: python3 tools/mt8163_pstore_ramoops_contract_test.py
-
-      - name: Run Radar-Puffin mute lamp contract
-        run: python3 tools/mt8163_mute_lamp_contract_test.py
-
-      - name: Run procfs map_files NULL mm contract
-        run: python3 fs/proc/test_proc_map_files_null_mm_contract.py
+      - name: Run LibreEcho contract tests
+        run: python3 -B libreecho/run_contract_tests.py
 
       - name: Configure and build kernel
         shell: bash
@@ -170,11 +124,17 @@ jobs:
           make O="$out" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
             LD=arm-linux-gnueabihf-ld.bfd olddefconfig
           make -j2 O="$out" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-            LD=arm-linux-gnueabihf-ld.bfd zImage dtbs
+            LD=arm-linux-gnueabihf-ld.bfd zImage dtbs modules
           test -s "$out/arch/arm/boot/zImage"
           test -s "$out/arch/arm/boot/dts/$KERNEL_DTB"
           test -s "$out/System.map"
           grep -qx 'CONFIG_CFG80211_WEXT=y' "$out/.config"
+          # The CONSYS stack is built out of tree against this kernel.
+          grep -qx 'CONFIG_MODULES=y' "$out/.config"
+          grep -qx 'CONFIG_MTK_MT8163_CONSYS_HOST=y' "$out/.config"
+          grep -qx 'CONFIG_WIRELESS_EXT=y' "$out/.config"
+          grep -qx 'CONFIG_WEXT_PRIV=y' "$out/.config"
+          test -s "$out/Module.symvers"
           # The MUSB role is a Kconfig choice, so it can be re-resolved by
           # olddefconfig.  Gadget-only makes mtk_musb_probe() overwrite the
           # device tree's dr_mode with USB_DR_MODE_PERIPHERAL, which drops the
@@ -183,6 +143,43 @@ jobs:
           grep -qx 'CONFIG_USB_MUSB_DUAL_ROLE=y' "$out/.config"
           ! grep -qx 'CONFIG_USB_MUSB_GADGET=y' "$out/.config"
           git diff --check
+
+      - name: Read pinned connectivity revision
+        id: connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "repository=$(jq -er .repository libreecho/connectivity.json)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(jq -er .ref libreecho/connectivity.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out MT8163 connectivity modules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.connectivity.outputs.repository }}
+          ref: ${{ steps.connectivity.outputs.ref }}
+          path: connectivity
+          persist-credentials: false
+
+      - name: Build MT8163 connectivity modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/kernel-out"
+          KERNEL_SRC="$GITHUB_WORKSPACE" python3 -B connectivity/tests/run.py
+          make -C connectivity -j2 KDIR="$out" ARCH=arm \
+            CROSS_COMPILE=arm-linux-gnueabihf- LD=arm-linux-gnueabihf-ld.bfd \
+            2>&1 | tee "$RUNNER_TEMP/connectivity.log"
+          # modpost reports undefined symbols and section mismatches.
+          ! grep -E '^(ERROR|WARNING): modpost' "$RUNNER_TEMP/connectivity.log"
+          mods="$RUNNER_TEMP/connectivity-modules"
+          mkdir -p "$mods"
+          grep -v '^#' connectivity/modules.load | while read -r m; do
+            ko="$(find connectivity -name "$m.ko")"
+            test -s "$ko"
+            cp "$ko" "$mods/"
+          done
+          cp connectivity/modules.load "$mods/"
+          git -C connectivity rev-parse HEAD > "$mods/REVISION"
 
       - name: Upload kernel build outputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -196,6 +193,14 @@ jobs:
             ${{ runner.temp }}/kernel-out/arch/arm/boot/dts/${{ matrix.dtb }}
             ${{ runner.temp }}/kernel-out/System.map
             ${{ runner.temp }}/kernel-out/.config
+
+      - name: Upload connectivity modules
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libreecho-connectivity-${{ github.sha }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/connectivity-modules
 
   target_artifacts:
     name: Publish kernel artifacts (${{ matrix.target }})
@@ -215,6 +220,12 @@ jobs:
           name: libreecho-linux-arm32-${{ github.sha }}-${{ matrix.build_target }}
           path: ${{ runner.temp }}/kernel-artifacts
 
+      - name: Download this target's connectivity modules
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: libreecho-connectivity-${{ github.sha }}-${{ matrix.build_target }}
+          path: ${{ runner.temp }}/connectivity-modules
+
       - name: Require complete build outputs
         shell: bash
         run: |
@@ -224,6 +235,7 @@ jobs:
           test -s "$out/arch/arm/boot/dts/$KERNEL_DTB"
           test -s "$out/System.map"
           test -s "$out/.config"
+          test -s "$RUNNER_TEMP/connectivity-modules/mt8163_wlan.ko"
 
       - name: Upload target kernel image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -240,6 +252,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: ${{ runner.temp }}/kernel-artifacts/arch/arm/boot/dts/${{ matrix.dtb }}
+
+      - name: Upload target connectivity modules
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: libreecho-kernel-${{ matrix.target }}-connectivity-modules
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/connectivity-modules
 
       - name: Upload target symbol map
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
