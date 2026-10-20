@@ -26,6 +26,8 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
 #include <linux/types.h>
@@ -41,6 +43,7 @@
 
 #define WDT_RST			0x08
 #define WDT_RST_RELOAD		0x1971
+#define WDT_STATUS		0x0c
 
 #define WDT_MODE		0x00
 #define WDT_MODE_EN		(1 << 0)
@@ -60,6 +63,14 @@
 #define WDT_SWSYS_RST_KEY	0x88000000
 
 #define WDT_SWSYSRST_EN		0xfc
+/* MT8163 request-watchdog bits live in the same top-RGU block. */
+#define MT8163_WDT_REQ_MODE		0x30
+#define MT8163_WDT_REQ_IRQ_EN		0x34
+#define MT8163_WDT_REQ_MODE_KEY		0x33000000
+#define MT8163_WDT_REQ_IRQ_KEY		0x44000000
+#define MT8163_WDT_REQ_SPM_THERMAL	BIT(0)
+#define MT8163_WDT_REQ_SPM_SCPSYS	BIT(1)
+#define MT8163_WDT_REQ_THERMAL		BIT(18)
 
 #define DRV_NAME		"mtk-wdt"
 #define DRV_VERSION		"1.0"
@@ -68,6 +79,53 @@
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 static unsigned int timeout;
+
+static int __init mtk8163_wdt_early_init(void)
+{
+	struct device_node *np;
+	void __iomem *base;
+	u32 mode, req_mode, req_irq;
+
+	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8163-rgu");
+	if (!np)
+		return 0;
+
+	base = of_iomap(np, 0);
+	of_node_put(np);
+	if (!base)
+		return 0;
+
+	mode = readl(base + WDT_MODE);
+	req_mode = readl(base + MT8163_WDT_REQ_MODE);
+	req_irq = readl(base + MT8163_WDT_REQ_IRQ_EN);
+	pr_notice("[WDTDBG] MT8163 early mode=0x%x length=0x%x status=0x%x req_mode=0x%x req_irq=0x%x\n",
+		  mode, readl(base + WDT_LENGTH), readl(base + WDT_STATUS),
+		  req_mode, req_irq);
+
+	/* Keep the normal RGU watchdog alive while the 6.1 driver probes. */
+	writel((120U << 6 << 5) | WDT_LENGTH_KEY, base + WDT_LENGTH);
+	writel(WDT_RST_RELOAD, base + WDT_RST);
+
+	/* These MT8163 request sources can reset the SoC independently of RGU pings. */
+	req_mode &= ~(MT8163_WDT_REQ_SPM_THERMAL |
+			      MT8163_WDT_REQ_SPM_SCPSYS |
+			      MT8163_WDT_REQ_THERMAL);
+	writel(req_mode | MT8163_WDT_REQ_MODE_KEY,
+	       base + MT8163_WDT_REQ_MODE);
+	req_irq &= ~(MT8163_WDT_REQ_SPM_THERMAL |
+			    MT8163_WDT_REQ_SPM_SCPSYS |
+			    MT8163_WDT_REQ_THERMAL);
+	writel(req_irq | MT8163_WDT_REQ_IRQ_KEY,
+	       base + MT8163_WDT_REQ_IRQ_EN);
+
+	pr_notice("[WDTDBG] MT8163 early after req_mode=0x%x req_irq=0x%x mode=0x%x\n",
+		  readl(base + MT8163_WDT_REQ_MODE),
+		  readl(base + MT8163_WDT_REQ_IRQ_EN),
+		  readl(base + WDT_MODE));
+
+	return 0;
+}
+core_initcall(mtk8163_wdt_early_init);
 
 struct mtk_wdt_dev {
 	struct watchdog_device wdt_dev;
@@ -253,6 +311,10 @@ static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
 
 	iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
+	pr_info_ratelimited("mtk-wdt 10007000.toprgu: keepalive ping mode=0x%x req_mode=0x%x req_irq=0x%x\n",
+			    ioread32(wdt_base + WDT_MODE),
+			    ioread32(wdt_base + MT8163_WDT_REQ_MODE),
+			    ioread32(wdt_base + MT8163_WDT_REQ_IRQ_EN));
 
 	return 0;
 }
