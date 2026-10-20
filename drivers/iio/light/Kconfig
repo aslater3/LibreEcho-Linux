@@ -7,6 +7,8 @@
 
 menu "Light sensors"
 
+source "drivers/iio/light/libreecho/Kconfig"
+
 config ACPI_ALS
 	tristate "ACPI Ambient Light Sensor"
 	depends on ACPI
