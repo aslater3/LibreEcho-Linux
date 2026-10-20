@@ -508,6 +508,26 @@ config AMZ_PRIVACY
 	  lights the mute button's lamp from a software mute without
 	  entering the privacy latch.
 
+config MTK_MT8163_CONSYS_HOST
+	bool "Kernel support for the out-of-tree MT8163 CONSYS stack"
+	depends on ARM && ARCH_MEDIATEK && OF && HAS_IOMEM
+	depends on NET && RFKILL && MODULES
+	select CFG80211
+	select CRC32
+	select FW_LOADER
+	select ZLIB_DEFLATE
+	select WIRELESS
+	select WIRELESS_EXT
+	select WEXT_CORE
+	select WEXT_PROC
+	select WEXT_PRIV
+	help
+	  Build in the kernel infrastructure needed by the MT8163 CONSYS
+	  WMT/STP/BTIF, Wi-Fi and Bluetooth modules, which are maintained
+	  outside this tree in LibreEcho-mt8163-connectivity.  Several of
+	  these symbols are not user-selectable, so an external module
+	  cannot request them itself.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
