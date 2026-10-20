@@ -60,6 +60,23 @@ The merge still needs conflict review, the full ARM32 build and contract
 checks, and hardware acceptance where relevant. Renovate's
 `.github/renovate-upstreams.env` marker remains a review signal only.
 
+## Production kernel parity
+
+Until a functional change is intended, this tree must build exactly the
+production kernel. `.github/workflows/parity.yml` runs
+`libreecho/parity_check.sh`, which builds this tree and the LibreEcho-Linux-6.1
+revision pinned in `libreecho/parity.json` with pinned build metadata and
+requires a byte-identical `zImage`, DTBs, `System.map` and `.config`:
+
+```sh
+git clone https://github.com/aslater3/LibreEcho-Linux-6.1 ref
+git -C ref checkout "$(jq -r .ref libreecho/parity.json)"
+libreecho/parity_check.sh ref
+```
+
+When an intended functional change lands, move or remove the pin in the same
+pull request.
+
 ## Next LTS canary
 
 `.github/workflows/next-lts-canary.yml` runs `libreecho/next_lts_canary.sh`

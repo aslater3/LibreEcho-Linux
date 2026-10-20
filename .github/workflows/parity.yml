@@ -1,0 +1,60 @@
+name: Production kernel parity
+
+# While LibreEcho-Linux is meant to build exactly the production kernel,
+# build it and the pinned LibreEcho-Linux-6.1 revision with pinned build
+# metadata and require byte-identical outputs.  Remove this workflow (or
+# move the pin) when an intended functional change lands.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: Byte-identical to LibreEcho-Linux-6.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out Linux source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: this
+
+      - name: Read reference revision
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "repository=$(jq -er .repository this/libreecho/parity.json)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(jq -er .ref this/libreecho/parity.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.ref.outputs.repository }}
+          ref: ${{ steps.ref.outputs.ref }}
+          persist-credentials: false
+          path: reference
+
+      - name: Install ARM32 build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils-arm-linux-gnueabihf bison build-essential flex \
+            gcc-arm-linux-gnueabihf jq libelf-dev libssl-dev python3
+
+      - name: Build both and compare
+        run: this/libreecho/parity_check.sh reference "$RUNNER_TEMP/parity"

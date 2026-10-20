@@ -1,0 +1,12 @@
+{
+  "repository": "aslater3/LibreEcho-Linux-6.1",
+  "ref": "ac890a53b229db1c624a9c4eb6348e20c11cac43",
+  "defconfig": "mt8163_arm32_defconfig",
+  "outputs": [
+    "arch/arm/boot/zImage",
+    "arch/arm/boot/dts/libreecho-radar-puffin.dtb",
+    "arch/arm/boot/dts/libreecho-giza-evt.dtb",
+    "System.map",
+    ".config"
+  ]
+}
