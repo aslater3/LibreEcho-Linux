@@ -5,6 +5,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/io.h>
 #include <linux/clk-provider.h>
 #include <linux/compiler_types.h>
 #include <linux/container_of.h>
@@ -438,5 +439,140 @@ int devm_mtk_clk_mux_notifier_register(struct device *dev, struct clk *clk,
 	return devm_clk_notifier_register(dev, clk, &mux_nb->nb);
 }
 EXPORT_SYMBOL_GPL(devm_mtk_clk_mux_notifier_register);
+
+struct mtk_clk_mux_upd {
+	struct clk_hw hw;
+	void __iomem *base;
+	u32 mux_ofs;
+	u32 upd_ofs;
+	u8 mux_shift;
+	u8 mux_width;
+	s8 gate_shift;
+	s8 upd_shift;
+	spinlock_t *lock;
+};
+
+static inline struct mtk_clk_mux_upd *to_mtk_clk_mux_upd(struct clk_hw *hw)
+{
+	return container_of(hw, struct mtk_clk_mux_upd, hw);
+}
+
+static int mtk_mux_upd_enable(struct clk_hw *hw)
+{
+	struct mtk_clk_mux_upd *mux = to_mtk_clk_mux_upd(hw);
+	unsigned long flags = 0;
+	u32 val;
+
+	if (mux->lock)
+		spin_lock_irqsave(mux->lock, flags);
+	val = readl(mux->base + mux->mux_ofs);
+	val &= ~BIT(mux->gate_shift);
+	writel(val, mux->base + mux->mux_ofs);
+	if (mux->upd_shift >= 0)
+		writel(BIT(mux->upd_shift), mux->base + mux->upd_ofs);
+	if (mux->lock)
+		spin_unlock_irqrestore(mux->lock, flags);
+	return 0;
+}
+
+static void mtk_mux_upd_disable(struct clk_hw *hw)
+{
+	struct mtk_clk_mux_upd *mux = to_mtk_clk_mux_upd(hw);
+	unsigned long flags = 0;
+	u32 val;
+
+	if (mux->lock)
+		spin_lock_irqsave(mux->lock, flags);
+	val = readl(mux->base + mux->mux_ofs);
+	val |= BIT(mux->gate_shift);
+	writel(val, mux->base + mux->mux_ofs);
+	if (mux->upd_shift >= 0)
+		writel(BIT(mux->upd_shift), mux->base + mux->upd_ofs);
+	if (mux->lock)
+		spin_unlock_irqrestore(mux->lock, flags);
+}
+
+static int mtk_mux_upd_is_enabled(struct clk_hw *hw)
+{
+	struct mtk_clk_mux_upd *mux = to_mtk_clk_mux_upd(hw);
+
+	if (mux->gate_shift < 0)
+		return 1;
+	return !(readl(mux->base + mux->mux_ofs) & BIT(mux->gate_shift));
+}
+
+static u8 mtk_mux_upd_get_parent(struct clk_hw *hw)
+{
+	struct mtk_clk_mux_upd *mux = to_mtk_clk_mux_upd(hw);
+	u32 mask = GENMASK(mux->mux_width - 1, 0);
+	u32 val = readl(mux->base + mux->mux_ofs);
+
+	return (val >> mux->mux_shift) & mask;
+}
+
+static int mtk_mux_upd_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct mtk_clk_mux_upd *mux = to_mtk_clk_mux_upd(hw);
+	unsigned long flags = 0;
+	u32 mask = GENMASK(mux->mux_width - 1, 0) << mux->mux_shift;
+	u32 val;
+
+	if (mux->lock)
+		spin_lock_irqsave(mux->lock, flags);
+	val = readl(mux->base + mux->mux_ofs);
+	val = (val & ~mask) | (index << mux->mux_shift);
+	writel(val, mux->base + mux->mux_ofs);
+	if (mux->upd_shift >= 0)
+		writel(BIT(mux->upd_shift), mux->base + mux->upd_ofs);
+	if (mux->lock)
+		spin_unlock_irqrestore(mux->lock, flags);
+	return 0;
+}
+
+static const struct clk_ops mtk_mux_upd_ops = {
+	.enable = mtk_mux_upd_enable,
+	.disable = mtk_mux_upd_disable,
+	.is_enabled = mtk_mux_upd_is_enabled,
+	.get_parent = mtk_mux_upd_get_parent,
+	.set_parent = mtk_mux_upd_set_parent,
+};
+
+void mtk_clk_register_mux_upds(const struct mtk_mux_upd *muxes, int num,
+			       void __iomem *base, spinlock_t *lock,
+			       struct clk_hw_onecell_data *clk_data)
+{
+	int i;
+
+	for (i = 0; i < num; i++) {
+		struct mtk_clk_mux_upd *mux;
+		struct clk_init_data init = {};
+		int ret;
+
+		mux = kzalloc(sizeof(*mux), GFP_KERNEL);
+		if (!mux)
+			continue;
+		init.name = muxes[i].name;
+		init.flags = CLK_SET_RATE_PARENT;
+		init.parent_names = muxes[i].parent_names;
+		init.num_parents = muxes[i].num_parents;
+		init.ops = &mtk_mux_upd_ops;
+		mux->base = base;
+		mux->mux_ofs = muxes[i].mux_ofs;
+		mux->upd_ofs = muxes[i].upd_ofs;
+		mux->mux_shift = muxes[i].mux_shift;
+		mux->mux_width = muxes[i].mux_width;
+		mux->gate_shift = muxes[i].gate_shift;
+		mux->upd_shift = muxes[i].upd_shift;
+		mux->lock = lock;
+		mux->hw.init = &init;
+		ret = clk_hw_register(NULL, &mux->hw);
+		if (ret) {
+			kfree(mux);
+			continue;
+		}
+		clk_data->hws[muxes[i].id] = &mux->hw;
+	}
+}
+EXPORT_SYMBOL_GPL(mtk_clk_register_mux_upds);
 
 MODULE_LICENSE("GPL");

@@ -187,11 +187,35 @@ int mtk_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 	u32 pcw = 0;
 	u32 postdiv;
 
+	/* Platform-specific safe transition hook (e.g. MT8163 ARMPLL CPU mux
+	 * handoff). If present, it owns the full set_rate sequence and calls
+	 * back into mtk_pll_set_rate_regs_safe() to do the raw PCW update. */
+	if (pll->data->set_rate_override)
+		return pll->data->set_rate_override(hw, rate, parent_rate);
+
 	mtk_pll_calc_values(pll, &pcw, &postdiv, rate, parent_rate);
 	mtk_pll_set_rate_regs(pll, pcw, postdiv);
 
 	return 0;
 }
+
+/* Public helper so a platform-specific safe set_rate wrapper (e.g. MT8163
+ * ARMPLL with a CPU clock mux handoff) can reprogram the PLL registers
+ * without duplicating the PCW calculation. Calls the raw register update
+ * directly to avoid re-entering the set_rate_override hook. */
+int mtk_pll_set_rate_regs_safe(struct clk_hw *hw, unsigned long rate,
+		unsigned long parent_rate)
+{
+	struct mtk_clk_pll *pll = to_mtk_clk_pll(hw);
+	u32 pcw = 0;
+	u32 postdiv;
+
+	mtk_pll_calc_values(pll, &pcw, &postdiv, rate, parent_rate);
+	mtk_pll_set_rate_regs(pll, pcw, postdiv);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mtk_pll_set_rate_regs_safe);
 
 unsigned long mtk_pll_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 {

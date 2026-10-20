@@ -52,6 +52,11 @@ struct mtk_pll_data {
 	u8 pll_en_bit; /* Assume 0, indicates BIT(0) by default */
 	u8 pcw_chg_bit;
 	u8 fenc_sta_bit;
+	/* Optional platform-specific safe set_rate hook. When set, it owns the
+	 * full rate-change sequence (e.g. CPU clock mux handoff) and calls
+	 * mtk_pll_set_rate_regs_safe() for the raw PCW update. */
+	int (*set_rate_override)(struct clk_hw *hw, unsigned long rate,
+				 unsigned long parent_rate);
 };
 
 /*
@@ -117,5 +122,11 @@ void mtk_clk_unregister_pll(struct clk_hw *hw);
 
 __iomem void *mtk_clk_pll_get_base(struct clk_hw *hw,
 				   const struct mtk_pll_data *data);
+
+/* Reprogram a registered PLL's rate registers. Exposed so platform-specific
+ * safe set_rate wrappers (e.g. MT8163 ARMPLL CPU mux handoff) can drive the
+ * underlying PCW update without duplicating the calculation. */
+int mtk_pll_set_rate_regs_safe(struct clk_hw *hw, unsigned long rate,
+			       unsigned long parent_rate);
 
 #endif /* __DRV_CLK_MTK_PLL_H */

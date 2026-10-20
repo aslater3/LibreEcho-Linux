@@ -44,6 +44,34 @@ struct mtk_mux {
 	signed char num_parents;
 };
 
+/* MT8163 uses direct mux registers with a separate update register. */
+struct mtk_mux_upd {
+	int id;
+	const char *name;
+	const char * const *parent_names;
+	u32 mux_ofs;
+	u32 upd_ofs;
+	s8 mux_shift;
+	s8 mux_width;
+	s8 gate_shift;
+	s8 upd_shift;
+	s8 num_parents;
+};
+
+#define MUX_UPD(_id, _name, _parents, _mux_ofs, _shift, _width, _gate, \
+			_upd_ofs, _upd) {				\
+	.id = _id,						\
+	.name = _name,						\
+	.mux_ofs = _mux_ofs,					\
+	.upd_ofs = _upd_ofs,					\
+	.mux_shift = _shift,					\
+	.mux_width = _width,					\
+	.gate_shift = _gate,					\
+	.upd_shift = _upd,					\
+	.parent_names = _parents,				\
+	.num_parents = ARRAY_SIZE(_parents),			\
+}
+
 #define __GATE_CLR_SET_UPD_FLAGS(_id, _name, _parents, _paridx,		\
 			 _num_parents, _mux_ofs, _mux_set_ofs,		\
 			 _mux_clr_ofs, _shift, _width, _gate, _upd_ofs,	\
@@ -213,6 +241,10 @@ int mtk_clk_register_muxes(struct device *dev,
 
 void mtk_clk_unregister_muxes(const struct mtk_mux *muxes, int num,
 			      struct clk_hw_onecell_data *clk_data);
+
+void mtk_clk_register_mux_upds(const struct mtk_mux_upd *muxes, int num,
+			       void __iomem *base, spinlock_t *lock,
+			       struct clk_hw_onecell_data *clk_data);
 
 struct mtk_mux_nb {
 	struct notifier_block	nb;
