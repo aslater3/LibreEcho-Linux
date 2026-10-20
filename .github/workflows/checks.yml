@@ -124,17 +124,11 @@ jobs:
           make O="$out" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
             LD=arm-linux-gnueabihf-ld.bfd olddefconfig
           make -j2 O="$out" ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-            LD=arm-linux-gnueabihf-ld.bfd zImage dtbs modules
+            LD=arm-linux-gnueabihf-ld.bfd zImage dtbs
           test -s "$out/arch/arm/boot/zImage"
           test -s "$out/arch/arm/boot/dts/$KERNEL_DTB"
           test -s "$out/System.map"
           grep -qx 'CONFIG_CFG80211_WEXT=y' "$out/.config"
-          # The CONSYS stack is built out of tree against this kernel.
-          grep -qx 'CONFIG_MODULES=y' "$out/.config"
-          grep -qx 'CONFIG_MTK_MT8163_CONSYS_HOST=y' "$out/.config"
-          grep -qx 'CONFIG_WIRELESS_EXT=y' "$out/.config"
-          grep -qx 'CONFIG_WEXT_PRIV=y' "$out/.config"
-          test -s "$out/Module.symvers"
           # The MUSB role is a Kconfig choice, so it can be re-resolved by
           # olddefconfig.  Gadget-only makes mtk_musb_probe() overwrite the
           # device tree's dr_mode with USB_DR_MODE_PERIPHERAL, which drops the
@@ -143,43 +137,6 @@ jobs:
           grep -qx 'CONFIG_USB_MUSB_DUAL_ROLE=y' "$out/.config"
           ! grep -qx 'CONFIG_USB_MUSB_GADGET=y' "$out/.config"
           git diff --check
-
-      - name: Read pinned connectivity revision
-        id: connectivity
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "repository=$(jq -er .repository libreecho/connectivity.json)" >> "$GITHUB_OUTPUT"
-          echo "ref=$(jq -er .ref libreecho/connectivity.json)" >> "$GITHUB_OUTPUT"
-
-      - name: Check out MT8163 connectivity modules
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ steps.connectivity.outputs.repository }}
-          ref: ${{ steps.connectivity.outputs.ref }}
-          path: connectivity
-          persist-credentials: false
-
-      - name: Build MT8163 connectivity modules
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/kernel-out"
-          KERNEL_SRC="$GITHUB_WORKSPACE" python3 -B connectivity/tests/run.py
-          make -C connectivity -j2 KDIR="$out" ARCH=arm \
-            CROSS_COMPILE=arm-linux-gnueabihf- LD=arm-linux-gnueabihf-ld.bfd \
-            2>&1 | tee "$RUNNER_TEMP/connectivity.log"
-          # modpost reports undefined symbols and section mismatches.
-          ! grep -E '^(ERROR|WARNING): modpost' "$RUNNER_TEMP/connectivity.log"
-          mods="$RUNNER_TEMP/connectivity-modules"
-          mkdir -p "$mods"
-          grep -v '^#' connectivity/modules.load | while read -r m; do
-            ko="$(find connectivity -name "$m.ko")"
-            test -s "$ko"
-            cp "$ko" "$mods/"
-          done
-          cp connectivity/modules.load "$mods/"
-          git -C connectivity rev-parse HEAD > "$mods/REVISION"
 
       - name: Upload kernel build outputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -193,14 +150,6 @@ jobs:
             ${{ runner.temp }}/kernel-out/arch/arm/boot/dts/${{ matrix.dtb }}
             ${{ runner.temp }}/kernel-out/System.map
             ${{ runner.temp }}/kernel-out/.config
-
-      - name: Upload connectivity modules
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: libreecho-connectivity-${{ github.sha }}-${{ matrix.target }}
-          if-no-files-found: error
-          retention-days: 14
-          path: ${{ runner.temp }}/connectivity-modules
 
   target_artifacts:
     name: Publish kernel artifacts (${{ matrix.target }})
@@ -220,12 +169,6 @@ jobs:
           name: libreecho-linux-arm32-${{ github.sha }}-${{ matrix.build_target }}
           path: ${{ runner.temp }}/kernel-artifacts
 
-      - name: Download this target's connectivity modules
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: libreecho-connectivity-${{ github.sha }}-${{ matrix.build_target }}
-          path: ${{ runner.temp }}/connectivity-modules
-
       - name: Require complete build outputs
         shell: bash
         run: |
@@ -235,7 +178,6 @@ jobs:
           test -s "$out/arch/arm/boot/dts/$KERNEL_DTB"
           test -s "$out/System.map"
           test -s "$out/.config"
-          test -s "$RUNNER_TEMP/connectivity-modules/mt8163_wlan.ko"
 
       - name: Upload target kernel image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -252,14 +194,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: ${{ runner.temp }}/kernel-artifacts/arch/arm/boot/dts/${{ matrix.dtb }}
-
-      - name: Upload target connectivity modules
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: libreecho-kernel-${{ matrix.target }}-connectivity-modules
-          if-no-files-found: error
-          retention-days: 14
-          path: ${{ runner.temp }}/connectivity-modules
 
       - name: Upload target symbol map
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -86,6 +86,20 @@ class SeriesSelectionTests(unittest.TestCase):
         ours.append(commit(self.repo, "b"))
         self.assertEqual(self.series(), ours)
 
+    def test_subtree_squash_commits_are_skipped(self) -> None:
+        ours = [commit(self.repo, "a")]
+        git(self.repo, "checkout", "-q", "--orphan", "squash")
+        git(self.repo, "rm", "-q", "-rf", ".")
+        commit(self.repo, "Kbuild")
+        git(
+            self.repo, "commit", "-q", "--amend", "-m",
+            "Squashed 'sub/' content\n\ngit-subtree-dir: sub\ngit-subtree-split: 0",
+        )
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "merge", "-q", "--allow-unrelated-histories", "-m", "Add sub", "squash")
+        ours.append(commit(self.repo, "b"))
+        self.assertEqual(self.series(), ours)
+
 
 if __name__ == "__main__":
     unittest.main()
