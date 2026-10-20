@@ -1693,7 +1693,9 @@ static int hci_mgmt_cmd(struct hci_mgmt_chan *chan, struct sock *sk,
 			goto done;
 		}
 
-		if (hci_dev_test_flag(hdev, HCI_SETUP) ||
+		if ((hci_dev_test_flag(hdev, HCI_SETUP) &&
+		     !(opcode == MGMT_OP_SET_POWERED &&
+		       hci_test_quirk(hdev, HCI_QUIRK_DEFERRED_SETUP))) ||
 		    hci_dev_test_flag(hdev, HCI_CONFIG) ||
 		    hci_dev_test_flag(hdev, HCI_USER_CHANNEL)) {
 			err = mgmt_cmd_status(sk, index, opcode,
