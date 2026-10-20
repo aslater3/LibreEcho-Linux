@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mfd/mt6323/registers.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
@@ -913,6 +914,13 @@ static int mt8173_regs[] = {
 	[PWRAP_CIPHER_SWRST] =		0x140,
 	[PWRAP_DCM_EN] =		0x144,
 	[PWRAP_DCM_DBC_PRD] =		0x148,
+	[PWRAP_ADC_CMD_ADDR] =		0x150,
+	[PWRAP_PWRAP_ADC_CMD] =		0x154,
+	[PWRAP_ADC_RDY_ADDR] =		0x158,
+	[PWRAP_ADC_RDATA_ADDR1] =	0x15c,
+	[PWRAP_ADC_RDATA_ADDR2] =	0x160,
+	[PWRAP_OP_TYPE] =		0x16c,
+	[PWRAP_MSB_FIRST] =		0x170,
 };
 
 static int mt8183_regs[] = {
@@ -1135,6 +1143,7 @@ enum pwrap_type {
 	PWRAP_MT6873,
 	PWRAP_MT7622,
 	PWRAP_MT8135,
+	PWRAP_MT8163,
 	PWRAP_MT8173,
 	PWRAP_MT8183,
 	PWRAP_MT8186,
@@ -1556,6 +1565,35 @@ static int pwrap_mt2701_init_reg_clock(struct pmic_wrapper *wrp)
 	return 0;
 }
 
+static int pwrap_mt8163_init_reg_clock(struct pmic_wrapper *wrp)
+{
+	u32 val;
+	int ret;
+
+	if (wrp->slave->type != PMIC_MT6323)
+		return pwrap_common_init_reg_clock(wrp);
+
+	ret = pwrap_write(wrp, MT6323_TOP_CKCON1_CLR, 0x3);
+	if (ret)
+		return ret;
+
+	ret = pwrap_read(wrp, MT6323_TOP_CKCON1, &val);
+	if (ret)
+		return ret;
+	if (val & 0x3)
+		return -EIO;
+
+	ret = pwrap_write(wrp, wrp->slave->dew_regs[PWRAP_DEW_RDDMY_NO],
+			  0x8);
+	if (ret)
+		return ret;
+
+	pwrap_writel(wrp, 0x88, PWRAP_RDDMY);
+	pwrap_init_chip_select_ext(wrp, 5, 0, 2, 2);
+
+	return 0;
+}
+
 static bool pwrap_is_cipher_ready(struct pmic_wrapper *wrp)
 {
 	return pwrap_readl(wrp, PWRAP_CIPHER_RDY) & 1;
@@ -1594,6 +1632,7 @@ static int pwrap_init_cipher(struct pmic_wrapper *wrp)
 	case PWRAP_MT6765:
 	case PWRAP_MT6779:
 	case PWRAP_MT6797:
+	case PWRAP_MT8163:
 	case PWRAP_MT8173:
 	case PWRAP_MT8186:
 	case PWRAP_MT8516:
@@ -1753,6 +1792,20 @@ static int pwrap_mt2701_init_soc_specific(struct pmic_wrapper *wrp)
 	return 0;
 }
 
+static int pwrap_mt8163_init_soc_specific(struct pmic_wrapper *wrp)
+{
+	if (wrp->slave->type != PMIC_MT6323)
+		return 0;
+
+	pwrap_writel(wrp, MT6323_AUXADC_CON21, PWRAP_ADC_CMD_ADDR);
+	pwrap_writel(wrp, 0x8000, PWRAP_PWRAP_ADC_CMD);
+	pwrap_writel(wrp, MT6323_AUXADC_ADC12, PWRAP_ADC_RDY_ADDR);
+	pwrap_writel(wrp, MT6323_AUXADC_ADC13, PWRAP_ADC_RDATA_ADDR1);
+	pwrap_writel(wrp, MT6323_AUXADC_ADC14, PWRAP_ADC_RDATA_ADDR2);
+
+	return 0;
+}
+
 static int pwrap_mt7622_init_soc_specific(struct pmic_wrapper *wrp)
 {
 	pwrap_writel(wrp, 0, PWRAP_STAUPD_PRD);
@@ -1788,10 +1841,16 @@ static int pwrap_init(struct pmic_wrapper *wrp)
 	if (wrp->rstc_bridge)
 		reset_control_reset(wrp->rstc_bridge);
 
-	if (wrp->master->type == PWRAP_MT8173) {
+	if (wrp->master->type == PWRAP_MT8163 ||
+	    wrp->master->type == PWRAP_MT8173) {
 		/* Enable DCM */
 		pwrap_writel(wrp, 3, PWRAP_DCM_EN);
 		pwrap_writel(wrp, 0, PWRAP_DCM_DBC_PRD);
+	}
+
+	if (wrp->master->type == PWRAP_MT8163) {
+		pwrap_writel(wrp, 0, PWRAP_OP_TYPE);
+		pwrap_writel(wrp, 1, PWRAP_MSB_FIRST);
 	}
 
 	if (HAS_CAP(wrp->slave->caps, PWRAP_SLV_CAP_SPI)) {
@@ -2078,6 +2137,19 @@ static const struct pmic_wrapper_type pwrap_mt8173 = {
 	.init_soc_specific = pwrap_mt8173_init_soc_specific,
 };
 
+static const struct pmic_wrapper_type pwrap_mt8163 = {
+	.regs = mt8173_regs,
+	.type = PWRAP_MT8163,
+	.arb_en_all = 0xff,
+	.int_en_all = 0x7ffffff9,
+	.int1_en_all = 0,
+	.spi_w = PWRAP_MAN_CMD_SPI_WRITE,
+	.wdt_src = PWRAP_WDT_SRC_MASK_ALL,
+	.caps = PWRAP_CAP_DCM,
+	.init_reg_clock = pwrap_mt8163_init_reg_clock,
+	.init_soc_specific = pwrap_mt8163_init_soc_specific,
+};
+
 static const struct pmic_wrapper_type pwrap_mt8183 = {
 	.regs = mt8183_regs,
 	.type = PWRAP_MT8183,
@@ -2137,6 +2209,7 @@ static const struct of_device_id of_pwrap_match_tbl[] = {
 	{ .compatible = "mediatek,mt6873-pwrap", .data = &pwrap_mt6873 },
 	{ .compatible = "mediatek,mt7622-pwrap", .data = &pwrap_mt7622 },
 	{ .compatible = "mediatek,mt8135-pwrap", .data = &pwrap_mt8135 },
+	{ .compatible = "mediatek,mt8163-pwrap", .data = &pwrap_mt8163 },
 	{ .compatible = "mediatek,mt8173-pwrap", .data = &pwrap_mt8173 },
 	{ .compatible = "mediatek,mt8183-pwrap", .data = &pwrap_mt8183 },
 	{ .compatible = "mediatek,mt8186-pwrap", .data = &pwrap_mt8186 },
@@ -2172,7 +2245,10 @@ static int pwrap_probe(struct platform_device *pdev)
 	wrp->slave = of_slave_id->data;
 	wrp->dev = &pdev->dev;
 
-	wrp->base = devm_platform_ioremap_resource_byname(pdev, "pwrap");
+	/* The stock MT8163 DTB calls this resource pwrap-base. */
+	wrp->base = devm_platform_ioremap_resource_byname(pdev, "pwrap-base");
+	if (IS_ERR(wrp->base) && PTR_ERR(wrp->base) == -EINVAL)
+		wrp->base = devm_platform_ioremap_resource_byname(pdev, "pwrap");
 	if (IS_ERR(wrp->base))
 		return PTR_ERR(wrp->base);
 
@@ -2208,6 +2284,10 @@ static int pwrap_probe(struct platform_device *pdev)
 	}
 
 	wrp->clk_wrap = devm_clk_get(wrp->dev, "wrap");
+	if (IS_ERR(wrp->clk_wrap) && PTR_ERR(wrp->clk_wrap) == -ENOENT) {
+		/* The MT8163 DT binding names this input pwrap. */
+		wrp->clk_wrap = devm_clk_get(wrp->dev, "pwrap");
+	}
 	if (IS_ERR(wrp->clk_wrap)) {
 		dev_dbg(wrp->dev, "failed to get clock: %ld\n",
 			PTR_ERR(wrp->clk_wrap));

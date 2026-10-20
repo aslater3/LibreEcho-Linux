@@ -55,6 +55,15 @@ config MTK_SCPSYS
 	  Say yes here to add support for the MediaTek SCPSYS power domain
 	  driver.
 
+config MTK_SCPSYS_MT8163
+	bool "MediaTek MT8163 SCPSYS Support"
+	depends on MACH_MT8163 || COMPILE_TEST
+	depends on OF
+	select MTK_INFRACFG
+	default MACH_MT8163
+	help
+	  Say yes here to support the MT8163 system power controller.
+
 config MTK_SCPSYS_PM_DOMAINS
 	bool "MediaTek SCPSYS generic power domain"
 	default ARCH_MEDIATEK
