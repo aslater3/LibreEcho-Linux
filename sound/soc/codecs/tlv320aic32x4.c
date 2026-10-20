@@ -16,6 +16,8 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/ktime.h>
+#include <linux/mutex.h>
 #include <linux/of_clk.h>
 #include <linux/pm.h>
 #include <linux/regulator/consumer.h>
@@ -34,6 +36,7 @@
 
 struct aic32x4_priv {
 	struct regmap *regmap;
+	struct snd_soc_component *component;
 	u32 power_cfg;
 	u32 micpga_routing;
 	bool swapdacs;
@@ -50,7 +53,102 @@ struct aic32x4_priv {
 	enum aic32x4_type type;
 
 	unsigned int fmt;
+	bool defer_playback_unmute;
+	bool playback_mono;
+	bool playback_active;
+	struct mutex diag_lock;
 };
+
+#define AIC32X4_GAIN_APPLIED		AIC32X4_REG(1, 63)
+#define AIC32X4_GAIN_APPLIED_POLL_MS	100
+#define AIC32X4_GAIN_APPLIED_RETRIES	22
+#define AIC32X4_GAIN_APPLIED_MONO	BIT(6)
+#define AIC32X4_GAIN_APPLIED_STEREO	(BIT(7) | BIT(6))
+
+/* Read-only sequencing markers: final register values do not prove that
+ * the analogue gain ramp saw the same clock/power sequence as 3.18. */
+#define AIC32X4_ADC_FLAG		AIC32X4_REG(0, 36)
+#define AIC32X4_DAC_FLAG1		AIC32X4_REG(0, 37)
+#define AIC32X4_DAC_FLAG2		AIC32X4_REG(0, 38)
+
+#if IS_ENABLED(CONFIG_SND_SOC_TLV320AIC32X4_PRB25_DIAG)
+#define AIC32X4_DIAG_DACSPB		AIC32X4_REG(0, 60)
+#define AIC32X4_DIAG_DAC_FLAG2	AIC32X4_REG(0, 38)
+#define AIC32X4_DIAG_STICKY1		AIC32X4_REG(0, 42)
+#define AIC32X4_DIAG_STICKY2		AIC32X4_REG(0, 44)
+#define AIC32X4_DIAG_DOUTCTL		AIC32X4_REG(0, 53)
+#define AIC32X4_DIAG_DRC_CTRL1	AIC32X4_REG(0, 68)
+#define AIC32X4_DIAG_BEEP_CONTROL	AIC32X4_REG(0, 71)
+#define AIC32X4_DIAG_BEEP_VOLUME_R	AIC32X4_REG(0, 72)
+#define AIC32X4_DIAG_BEEP_LENGTH_MSB	AIC32X4_REG(0, 73)
+#define AIC32X4_DIAG_BEEP_LENGTH_MID	AIC32X4_REG(0, 74)
+#define AIC32X4_DIAG_BEEP_LENGTH_LSB	AIC32X4_REG(0, 75)
+#define AIC32X4_DIAG_BEEP_SIN_MSB	AIC32X4_REG(0, 76)
+#define AIC32X4_DIAG_BEEP_SIN_LSB	AIC32X4_REG(0, 77)
+#define AIC32X4_DIAG_BEEP_COS_MSB	AIC32X4_REG(0, 78)
+#define AIC32X4_DIAG_BEEP_COS_LSB	AIC32X4_REG(0, 79)
+#define AIC32X4_DIAG_DAC_POWER_MASK	(BIT(7) | BIT(3))
+#define AIC32X4_DIAG_DAC_SETUP_MASK	(BIT(7) | BIT(6))
+#define AIC32X4_DIAG_OUTPWR_MASK		(BIT(5) | BIT(4))
+#define AIC32X4_DIAG_FULL_OUTPUT_MASK	0xaa
+#define AIC32X4_DIAG_DAC_MUTE_MASK	0x0c
+#define AIC32X4_DIAG_HP_ROUTE_MASK	BIT(3)
+#define AIC32X4_DIAG_DAC_GAIN_MASK	0x11
+#define AIC32X4_DIAG_MFP2_FUNC_MASK	0x0e
+#define AIC32X4_DIAG_MFP2_GPIO_FUNC	0x04
+#define AIC32X4_DIAG_DAC_STICKY_MASK	0xc0
+#define AIC32X4_DIAG_HP_STICKY_MASK	0xc0
+#define AIC32X4_DIAG_BEEP_ENABLE		BIT(7)
+#define AIC32X4_DIAG_BEEP_DURATION_MS	2000
+#define AIC32X4_DIAG_BEEP_LENGTH_MSB_VALUE	0x01
+#define AIC32X4_DIAG_BEEP_LENGTH_MID_VALUE	0x77
+#define AIC32X4_DIAG_BEEP_LENGTH_LSB_VALUE	0x00
+#define AIC32X4_DIAG_POLL_MS		20
+#define AIC32X4_DIAG_DOWN_TIMEOUT_MS	6000
+#define AIC32X4_DIAG_UP_TIMEOUT_MS	8000
+#endif
+
+static unsigned int aic32x4_debug_read(struct snd_soc_component *component,
+					       unsigned int reg)
+{
+	int ret;
+
+	ret = snd_soc_component_read(component, reg);
+	return ret < 0 ? 0xff : ret;
+}
+
+static void aic32x4_log_playback_state(struct snd_soc_component *component,
+					       const char *stage)
+{
+	dev_info(component->dev,
+		 "audio-stage=%s p0[r4=%02x r5=%02x r6=%02x r11=%02x r12=%02x "
+		 "r18=%02x r19=%02x r30=%02x r36=%02x r37=%02x r38=%02x "
+		 "r60=%02x r61=%02x r63=%02x r64=%02x] "
+		 "p1[r9=%02x r12=%02x r13=%02x r16=%02x r17=%02x r20=%02x r63=%02x]\n",
+		 stage,
+		 aic32x4_debug_read(component, AIC32X4_CLKMUX),
+		 aic32x4_debug_read(component, AIC32X4_PLLPR),
+		 aic32x4_debug_read(component, AIC32X4_PLLJ),
+		 aic32x4_debug_read(component, AIC32X4_NDAC),
+		 aic32x4_debug_read(component, AIC32X4_MDAC),
+		 aic32x4_debug_read(component, AIC32X4_NADC),
+		 aic32x4_debug_read(component, AIC32X4_MADC),
+		 aic32x4_debug_read(component, AIC32X4_BCLKN),
+		 aic32x4_debug_read(component, AIC32X4_ADC_FLAG),
+		 aic32x4_debug_read(component, AIC32X4_DAC_FLAG1),
+		 aic32x4_debug_read(component, AIC32X4_DAC_FLAG2),
+		 aic32x4_debug_read(component, AIC32X4_DACSPB),
+		 aic32x4_debug_read(component, AIC32X4_ADCSPB),
+		 aic32x4_debug_read(component, AIC32X4_DACSETUP),
+		 aic32x4_debug_read(component, AIC32X4_DACMUTE),
+		 aic32x4_debug_read(component, AIC32X4_OUTPWRCTL),
+		 aic32x4_debug_read(component, AIC32X4_HPLROUTE),
+		 aic32x4_debug_read(component, AIC32X4_HPRROUTE),
+		 aic32x4_debug_read(component, AIC32X4_HPLGAIN),
+		 aic32x4_debug_read(component, AIC32X4_HPRGAIN),
+		 aic32x4_debug_read(component, AIC32X4_HEADSTART),
+		 aic32x4_debug_read(component, AIC32X4_GAIN_APPLIED));
+}
 
 static int aic32x4_reset_adc(struct snd_soc_dapm_widget *w,
 			     struct snd_kcontrol *kcontrol, int event)
@@ -268,6 +366,561 @@ static const char * const ptm_text[] = {
 static SOC_ENUM_SINGLE_DECL(l_ptm_enum, AIC32X4_LPLAYBACK, 2, ptm_text);
 static SOC_ENUM_SINGLE_DECL(r_ptm_enum, AIC32X4_RPLAYBACK, 2, ptm_text);
 
+#if IS_ENABLED(CONFIG_SND_SOC_TLV320AIC32X4_PRB25_DIAG)
+struct aic32x4_diag_saved_reg {
+	unsigned int reg;
+	unsigned int value;
+};
+
+static void aic32x4_diag_record_error(int *first, int ret)
+{
+	if (ret && !*first)
+		*first = ret;
+}
+
+static unsigned int
+aic32x4_diag_saved_value(const struct aic32x4_diag_saved_reg *saved,
+			 unsigned int count, unsigned int reg)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++)
+		if (saved[i].reg == reg)
+			return saved[i].value;
+	return 0;
+}
+
+static int aic32x4_diag_wait_bits(struct snd_soc_component *component,
+				 unsigned int mask, unsigned int expected,
+				 unsigned int timeout_ms, const char *stage)
+{
+	unsigned int elapsed;
+	unsigned int value = 0;
+	int ret;
+
+	for (elapsed = 0; elapsed <= timeout_ms;
+	     elapsed += AIC32X4_DIAG_POLL_MS) {
+		ret = regmap_read(component->regmap, AIC32X4_DAC_FLAG1, &value);
+		if (ret)
+			return ret;
+		if ((value & mask) == expected) {
+			dev_info(component->dev,
+				 "prb25-diag-stage=%s elapsed_ms=%u dacflag1=%02x\n",
+				 stage, elapsed, value);
+			return 0;
+		}
+		msleep(AIC32X4_DIAG_POLL_MS);
+	}
+
+	dev_err(component->dev,
+		"prb25-diag-stage=%s timeout mask=%02x expected=%02x dacflag1=%02x\n",
+		stage, mask, expected, value);
+	return -ETIMEDOUT;
+}
+
+static int aic32x4_diag_wait_beep(struct snd_soc_component *component,
+					 unsigned int msb, unsigned int mid,
+					 unsigned int lsb)
+{
+	unsigned int elapsed;
+	unsigned int value = 0;
+	bool enabled = false;
+	u64 start_ns;
+	u64 clear_ns = 0;
+	int ret;
+
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   0x18);
+	if (ret)
+		return ret;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_LENGTH_MSB,
+			   msb);
+	if (ret)
+		return ret;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_LENGTH_MID,
+			   mid);
+	if (ret)
+		return ret;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_LENGTH_LSB,
+			   lsb);
+	if (ret)
+		return ret;
+
+	start_ns = ktime_get_boottime_ns();
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   0x98);
+	if (ret)
+		return ret;
+	dev_info(component->dev,
+		 "prb25-diag-r71-enable count=%02x%02x%02x start_ns=%llu\n",
+		 msb, mid, lsb, start_ns);
+
+	for (elapsed = 10; elapsed <= 4000; elapsed += 10) {
+		ret = regmap_read(component->regmap,
+				  AIC32X4_DIAG_BEEP_CONTROL, &value);
+		if (ret)
+			return ret;
+		if (value & AIC32X4_DIAG_BEEP_ENABLE)
+			enabled = true;
+		else if (enabled) {
+			clear_ns = ktime_get_boottime_ns();
+			dev_info(component->dev,
+				 "prb25-diag-r71-clear count=%02x%02x%02x "
+				 "elapsed_ms=%u elapsed_us=%llu clear_ns=%llu\n",
+				 msb, mid, lsb, elapsed,
+				 div_u64(clear_ns - start_ns, 1000), clear_ns);
+			return 0;
+		}
+		if (elapsed == 10 || elapsed == 500 || elapsed == 1500 ||
+		    elapsed == 2000 || elapsed == 2100)
+			dev_info(component->dev,
+				 "prb25-diag-r71-sample count=%02x%02x%02x "
+				 "elapsed_ms=%u value=%02x\n",
+				 msb, mid, lsb, elapsed, value);
+		msleep(10);
+	}
+
+	dev_err(component->dev,
+		"prb25-diag-r71-timeout count=%02x%02x%02x last=%02x\n",
+		msb, mid, lsb, value);
+	return enabled ? -ETIMEDOUT : -EIO;
+}
+
+static int aic32x4_diag_save(struct snd_soc_component *component,
+		   struct aic32x4_diag_saved_reg *saved, unsigned int count)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < count; i++) {
+		ret = regmap_read(component->regmap, saved[i].reg,
+				  &saved[i].value);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int aic32x4_diag_restore(struct snd_soc_component *component,
+		      const struct aic32x4_diag_saved_reg *saved,
+		      unsigned int count)
+{
+	unsigned int beep_control = aic32x4_diag_saved_value(saved, count,
+							      AIC32X4_DIAG_BEEP_CONTROL);
+	unsigned int dac_setup = aic32x4_diag_saved_value(saved, count,
+							   AIC32X4_DACSETUP);
+	unsigned int dac_mute = aic32x4_diag_saved_value(saved, count,
+							  AIC32X4_DACMUTE);
+	unsigned int outpwr = aic32x4_diag_saved_value(saved, count,
+							AIC32X4_OUTPWRCTL);
+	unsigned int hpl_route = aic32x4_diag_saved_value(saved, count,
+							 AIC32X4_HPLROUTE);
+	unsigned int hpr_route = aic32x4_diag_saved_value(saved, count,
+							 AIC32X4_HPRROUTE);
+	unsigned int ldacvol = aic32x4_diag_saved_value(saved, count,
+							 AIC32X4_LDACVOL);
+	unsigned int rdacvol = aic32x4_diag_saved_value(saved, count,
+							 AIC32X4_RDACVOL);
+	unsigned int doutctl = aic32x4_diag_saved_value(saved, count,
+							 AIC32X4_DIAG_DOUTCTL);
+	unsigned int drc_ctrl1 = aic32x4_diag_saved_value(saved, count,
+							   AIC32X4_DIAG_DRC_CTRL1);
+	unsigned int i;
+	unsigned int value = 0xff;
+	int first = 0;
+	int ret;
+
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   beep_control & ~AIC32X4_DIAG_BEEP_ENABLE);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_DACMUTE,
+			   dac_mute | AIC32X4_DIAG_DAC_MUTE_MASK);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_HPLROUTE,
+			   hpl_route & ~AIC32X4_DIAG_HP_ROUTE_MASK);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_HPRROUTE,
+			   hpr_route & ~AIC32X4_DIAG_HP_ROUTE_MASK);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_OUTPWRCTL,
+			   outpwr & ~AIC32X4_DIAG_OUTPWR_MASK);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_DACSETUP,
+			   dac_setup & ~AIC32X4_DIAG_DAC_SETUP_MASK);
+	aic32x4_diag_record_error(&first, ret);
+	ret = aic32x4_diag_wait_bits(component,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK, 0,
+				     AIC32X4_DIAG_DOWN_TIMEOUT_MS,
+				     "restore-output-off");
+	aic32x4_diag_record_error(&first, ret);
+
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_DACSPB,
+			   aic32x4_diag_saved_value(saved, count,
+						   AIC32X4_DIAG_DACSPB));
+	aic32x4_diag_record_error(&first, ret);
+	for (i = 0; i < count; i++) {
+		if (saved[i].reg < AIC32X4_DIAG_BEEP_CONTROL ||
+		    saved[i].reg > AIC32X4_DIAG_BEEP_COS_LSB)
+			continue;
+		ret = regmap_write(component->regmap, saved[i].reg,
+				   saved[i].value);
+		aic32x4_diag_record_error(&first, ret);
+	}
+	ret = regmap_write(component->regmap, AIC32X4_LDACVOL, ldacvol);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_RDACVOL, rdacvol);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_DOUTCTL, doutctl);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_DRC_CTRL1,
+			   drc_ctrl1);
+	aic32x4_diag_record_error(&first, ret);
+
+	ret = regmap_write(component->regmap, AIC32X4_DACSETUP, dac_setup);
+	aic32x4_diag_record_error(&first, ret);
+	ret = aic32x4_diag_wait_bits(component, AIC32X4_DIAG_DAC_POWER_MASK,
+				     AIC32X4_DIAG_DAC_POWER_MASK,
+				     AIC32X4_DIAG_DOWN_TIMEOUT_MS,
+				     "restore-dacs-on");
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_OUTPWRCTL, outpwr);
+	aic32x4_diag_record_error(&first, ret);
+	ret = aic32x4_diag_wait_bits(component,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK,
+				     AIC32X4_DIAG_UP_TIMEOUT_MS,
+				     "restore-full-output");
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_HPLROUTE, hpl_route);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_HPRROUTE, hpr_route);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_write(component->regmap, AIC32X4_DACMUTE, dac_mute);
+	aic32x4_diag_record_error(&first, ret);
+	ret = regmap_read(component->regmap, AIC32X4_DAC_FLAG1, &value);
+	aic32x4_diag_record_error(&first, ret);
+
+	if (first)
+		dev_err(component->dev,
+			"prb25-diag-restore-unconfirmed ret=%d dacflag1=%02x\n",
+			first, value);
+	else
+		dev_info(component->dev,
+			 "prb25-diag-restored dacflag1=%02x\n", value);
+	return first;
+}
+
+static int aic32x4_diag_run(struct snd_soc_component *component)
+{
+	struct aic32x4_diag_saved_reg saved[] = {
+		{ .reg = AIC32X4_DIAG_DACSPB },
+		{ .reg = AIC32X4_DACSETUP },
+		{ .reg = AIC32X4_DACMUTE },
+		{ .reg = AIC32X4_LDACVOL },
+		{ .reg = AIC32X4_RDACVOL },
+		{ .reg = AIC32X4_DIAG_DOUTCTL },
+		{ .reg = AIC32X4_DIAG_DRC_CTRL1 },
+		{ .reg = AIC32X4_DIAG_BEEP_CONTROL },
+		{ .reg = AIC32X4_DIAG_BEEP_VOLUME_R },
+		{ .reg = AIC32X4_DIAG_BEEP_LENGTH_MSB },
+		{ .reg = AIC32X4_DIAG_BEEP_LENGTH_MID },
+		{ .reg = AIC32X4_DIAG_BEEP_LENGTH_LSB },
+		{ .reg = AIC32X4_DIAG_BEEP_SIN_MSB },
+		{ .reg = AIC32X4_DIAG_BEEP_SIN_LSB },
+		{ .reg = AIC32X4_DIAG_BEEP_COS_MSB },
+		{ .reg = AIC32X4_DIAG_BEEP_COS_LSB },
+		{ .reg = AIC32X4_OUTPWRCTL },
+		{ .reg = AIC32X4_HPLROUTE },
+		{ .reg = AIC32X4_HPRROUTE },
+		{ .reg = AIC32X4_HPLGAIN },
+		{ .reg = AIC32X4_HPRGAIN },
+	};
+	unsigned int dac_setup;
+	unsigned int dac_mute;
+	unsigned int outpwr;
+	unsigned int beep_control;
+	unsigned int hpl_route;
+	unsigned int hpr_route;
+	unsigned int ldacvol;
+	unsigned int rdacvol;
+	unsigned int doutctl;
+	unsigned int drc_ctrl1;
+	unsigned int status;
+	unsigned int dac_flag2;
+	unsigned int sticky1;
+	unsigned int sticky2;
+	unsigned int snapshot_mute;
+	unsigned int snapshot_ldacvol;
+	unsigned int snapshot_rdacvol;
+	unsigned int snapshot_doutctl;
+	unsigned int snapshot_drc;
+	int restore_ret;
+	int ret;
+
+	ret = aic32x4_diag_save(component, saved, ARRAY_SIZE(saved));
+	if (ret)
+		return ret;
+	dac_setup = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					     AIC32X4_DACSETUP);
+	dac_mute = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					    AIC32X4_DACMUTE);
+	outpwr = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					  AIC32X4_OUTPWRCTL);
+	hpl_route = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					     AIC32X4_HPLROUTE);
+	hpr_route = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					     AIC32X4_HPRROUTE);
+	ldacvol = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					  AIC32X4_LDACVOL);
+	rdacvol = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					  AIC32X4_RDACVOL);
+	doutctl = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					  AIC32X4_DIAG_DOUTCTL);
+	drc_ctrl1 = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+					     AIC32X4_DIAG_DRC_CTRL1);
+	beep_control = aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+						AIC32X4_DIAG_BEEP_CONTROL);
+	ret = regmap_read(component->regmap, AIC32X4_DAC_FLAG1, &status);
+	if (ret)
+		return ret;
+	if ((dac_setup & AIC32X4_DIAG_DAC_SETUP_MASK) !=
+			AIC32X4_DIAG_DAC_SETUP_MASK ||
+	    (outpwr & AIC32X4_DIAG_OUTPWR_MASK) != AIC32X4_DIAG_OUTPWR_MASK ||
+	    (status & AIC32X4_DIAG_FULL_OUTPUT_MASK) !=
+			AIC32X4_DIAG_FULL_OUTPUT_MASK ||
+	    (beep_control & AIC32X4_DIAG_BEEP_ENABLE) ||
+	    ldacvol == 0x80 || rdacvol == 0x80 ||
+	    (doutctl & AIC32X4_DIAG_MFP2_FUNC_MASK) !=
+			AIC32X4_DIAG_MFP2_GPIO_FUNC)
+		return -EBUSY;
+
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   beep_control & ~AIC32X4_DIAG_BEEP_ENABLE);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DACMUTE,
+			   dac_mute | AIC32X4_DIAG_DAC_MUTE_MASK);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_HPLROUTE,
+			   hpl_route & ~AIC32X4_DIAG_HP_ROUTE_MASK);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_HPRROUTE,
+			   hpr_route & ~AIC32X4_DIAG_HP_ROUTE_MASK);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_OUTPWRCTL,
+			   outpwr & ~AIC32X4_DIAG_OUTPWR_MASK);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DACSETUP,
+			   dac_setup & ~AIC32X4_DIAG_DAC_SETUP_MASK);
+	if (ret)
+		goto restore;
+	ret = aic32x4_diag_wait_bits(component,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK, 0,
+				     AIC32X4_DIAG_DOWN_TIMEOUT_MS,
+				     "prepare-output-off");
+	if (ret)
+		goto restore;
+
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_DACSPB, 25);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   0x18);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_VOLUME_R,
+			   0x80);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap,
+			   AIC32X4_DIAG_BEEP_LENGTH_MSB,
+			   AIC32X4_DIAG_BEEP_LENGTH_MSB_VALUE);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap,
+			   AIC32X4_DIAG_BEEP_LENGTH_MID,
+			   AIC32X4_DIAG_BEEP_LENGTH_MID_VALUE);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap,
+			   AIC32X4_DIAG_BEEP_LENGTH_LSB,
+			   AIC32X4_DIAG_BEEP_LENGTH_LSB_VALUE);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_SIN_MSB,
+			   0x10);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_SIN_LSB,
+			   0xd8);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_COS_MSB,
+			   0x7e);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_COS_LSB,
+			   0xe3);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_DRC_CTRL1, 0x0f);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_LDACVOL, 0x00);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_RDACVOL, 0x00);
+	if (ret)
+		goto restore;
+
+	ret = regmap_write(component->regmap, AIC32X4_DACSETUP, dac_setup);
+	if (ret)
+		goto restore;
+	ret = aic32x4_diag_wait_bits(component, AIC32X4_DIAG_DAC_POWER_MASK,
+				     AIC32X4_DIAG_DAC_POWER_MASK,
+				     AIC32X4_DIAG_DOWN_TIMEOUT_MS,
+				     "beep-dacs-on");
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_OUTPWRCTL, outpwr);
+	if (ret)
+		goto restore;
+	ret = aic32x4_diag_wait_bits(component,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK,
+				     AIC32X4_DIAG_FULL_OUTPUT_MASK,
+				     AIC32X4_DIAG_UP_TIMEOUT_MS,
+				     "beep-full-output");
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DACMUTE, dac_mute);
+	if (ret)
+		goto restore;
+	ret = regmap_write(component->regmap, AIC32X4_DIAG_BEEP_CONTROL,
+			   0x18);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DIAG_DAC_FLAG2,
+			  &dac_flag2);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DACMUTE,
+			  &snapshot_mute);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_LDACVOL,
+			  &snapshot_ldacvol);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_RDACVOL,
+			  &snapshot_rdacvol);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DIAG_DOUTCTL,
+			  &snapshot_doutctl);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DIAG_DRC_CTRL1,
+			  &snapshot_drc);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DIAG_STICKY1, &sticky1);
+	if (ret)
+		goto restore;
+	ret = regmap_read(component->regmap, AIC32X4_DIAG_STICKY2, &sticky2);
+	if (ret)
+		goto restore;
+	dev_info(component->dev,
+		 "prb25-diag-snapshot r60=19 r37=%02x r38=%02x r42=%02x "
+		 "r44=%02x r53=%02x r63=%02x r64=%02x r65=%02x r66=%02x "
+		 "r68=%02x r71=18 r72=80 r73=%02x r74=%02x r75=%02x "
+		 "r76=10 r77=d8 r78=7e r79=e3 r9=%02x r12=%02x r13=%02x "
+		 "r16=%02x r17=%02x\n",
+		 status, dac_flag2, sticky1, sticky2, snapshot_doutctl,
+		 dac_setup, snapshot_mute, snapshot_ldacvol, snapshot_rdacvol,
+		 snapshot_drc, AIC32X4_DIAG_BEEP_LENGTH_MSB_VALUE,
+		 AIC32X4_DIAG_BEEP_LENGTH_MID_VALUE,
+		 AIC32X4_DIAG_BEEP_LENGTH_LSB_VALUE, outpwr, hpl_route,
+		 hpr_route, aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved),
+							 AIC32X4_HPLGAIN),
+		 aic32x4_diag_saved_value(saved, ARRAY_SIZE(saved), AIC32X4_HPRGAIN));
+	if ((dac_flag2 & AIC32X4_DIAG_DAC_GAIN_MASK) !=
+			AIC32X4_DIAG_DAC_GAIN_MASK ||
+	    (snapshot_mute & AIC32X4_DIAG_DAC_MUTE_MASK) ||
+	    snapshot_ldacvol == 0x80 || snapshot_rdacvol == 0x80 ||
+	    (snapshot_doutctl & AIC32X4_DIAG_MFP2_FUNC_MASK) !=
+			AIC32X4_DIAG_MFP2_GPIO_FUNC || snapshot_drc != 0x0f)
+		goto restore;
+	if (sticky1 & AIC32X4_DIAG_DAC_STICKY_MASK)
+		dev_warn(component->dev,
+			 "prb25-diag-dac-overflow sticky=%02x\n", sticky1);
+	if (sticky2 & AIC32X4_DIAG_HP_STICKY_MASK)
+		dev_warn(component->dev,
+			 "prb25-diag-hp-overcurrent sticky=%02x\n", sticky2);
+	dev_info(component->dev,
+		 "prb25-diag-prepared dacflag1=%02x dacflag2=%02x\n",
+		 status, dac_flag2);
+	ret = aic32x4_diag_wait_beep(component, 0x00, 0x77, 0x00);
+	if (ret)
+		goto restore;
+	ret = aic32x4_diag_wait_beep(component, 0x01, 0x77, 0x00);
+	if (ret)
+		goto restore;
+	ret = aic32x4_diag_wait_beep(component, 0x02, 0x77, 0x00);
+	if (ret)
+		goto restore;
+	ret = 0;
+
+restore:
+	restore_ret = aic32x4_diag_restore(component, saved,
+					   ARRAY_SIZE(saved));
+	if (!ret)
+		ret = restore_ret;
+	return ret;
+}
+
+static int aic32x4_diag_get(struct snd_kcontrol *kcontrol,
+			    struct snd_ctl_elem_value *value)
+{
+	value->value.integer.value[0] = 0;
+	return 0;
+}
+
+static int aic32x4_diag_put(struct snd_kcontrol *kcontrol,
+			    struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct aic32x4_priv *aic32x4 =
+		snd_soc_component_get_drvdata(component);
+	int ret;
+
+	if (!value->value.integer.value[0])
+		return 0;
+	if (mutex_lock_interruptible(&aic32x4->diag_lock))
+		return -ERESTARTSYS;
+	if (!aic32x4->playback_active) {
+		mutex_unlock(&aic32x4->diag_lock);
+		dev_warn(component->dev,
+			 "prb25-diag rejected: playback stream is not active\n");
+		return -EBUSY;
+	}
+	mutex_lock(&component->io_mutex);
+	ret = aic32x4_diag_run(component);
+	mutex_unlock(&component->io_mutex);
+	mutex_unlock(&aic32x4->diag_lock);
+
+	return ret ? ret : 1;
+}
+
+static const struct snd_kcontrol_new aic32x4_diag_controls[] = {
+	SOC_SINGLE_BOOL_EXT("PRB_P25 Internal Beep Trigger", 0,
+			    aic32x4_diag_get, aic32x4_diag_put),
+};
+#endif
+
 static const struct snd_kcontrol_new aic32x4_snd_controls[] = {
 	SOC_DOUBLE_R_S_TLV("PCM Playback Volume", AIC32X4_LDACVOL,
 			AIC32X4_RDACVOL, 0, -0x7f, 0x30, 7, 0, tlv_pcm),
@@ -405,7 +1058,8 @@ static const struct snd_kcontrol_new in3l_to_rmixer_controls[] = {
 };
 
 static const struct snd_soc_dapm_widget aic32x4_dapm_widgets[] = {
-	SND_SOC_DAPM_DAC("Left DAC", "Left Playback", AIC32X4_DACSETUP, 7, 0),
+	/* Both physical speaker bands belong to the single Playback stream. */
+	SND_SOC_DAPM_DAC("Left DAC", "Playback", AIC32X4_DACSETUP, 7, 0),
 	SND_SOC_DAPM_MIXER("HPL Output Mixer", SND_SOC_NOPM, 0, 0,
 			   &hpl_output_mixer_controls[0],
 			   ARRAY_SIZE(hpl_output_mixer_controls)),
@@ -416,7 +1070,7 @@ static const struct snd_soc_dapm_widget aic32x4_dapm_widgets[] = {
 			   ARRAY_SIZE(lol_output_mixer_controls)),
 	SND_SOC_DAPM_PGA("LOL Power", AIC32X4_OUTPWRCTL, 3, 0, NULL, 0),
 
-	SND_SOC_DAPM_DAC("Right DAC", "Right Playback", AIC32X4_DACSETUP, 6, 0),
+	SND_SOC_DAPM_DAC("Right DAC", "Playback", AIC32X4_DACSETUP, 6, 0),
 	SND_SOC_DAPM_MIXER("HPR Output Mixer", SND_SOC_NOPM, 0, 0,
 			   &hpr_output_mixer_controls[0],
 			   ARRAY_SIZE(hpr_output_mixer_controls)),
@@ -582,12 +1236,12 @@ static const struct regmap_range_cfg aic32x4_regmap_pages[] = {
 		.window_start = 0,
 		.window_len = 128,
 		.range_min = 0,
-		.range_max = AIC32X4_REFPOWERUP,
+		.range_max = AIC32X4_MAX_DSP_REG,
 	},
 };
 
 const struct regmap_config aic32x4_regmap_config = {
-	.max_register = AIC32X4_REFPOWERUP,
+	.max_register = AIC32X4_MAX_DSP_REG,
 	.ranges = aic32x4_regmap_pages,
 	.num_ranges = ARRAY_SIZE(aic32x4_regmap_pages),
 };
@@ -616,12 +1270,18 @@ static int aic32x4_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	u8 iface_reg_1 = 0;
 	u8 iface_reg_2 = 0;
 	u8 iface_reg_3 = 0;
+	u8 iface_reg_3_mask = AIC32X4_BCLKINV_MASK;
 
 	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
 	case SND_SOC_DAIFMT_CBP_CFP:
 		iface_reg_1 |= AIC32X4_BCLKMASTER | AIC32X4_WCLKMASTER;
 		break;
 	case SND_SOC_DAIFMT_CBC_CFC:
+		/* Match the working 3.18 Puffin slave-mode clock source. */
+		if (aic32x4->type == AIC32X4_TYPE_AIC32X4) {
+			iface_reg_3 |= AIC32X4_DACMOD2BCLK;
+			iface_reg_3_mask |= AIC32X4_BDIVCLK_MASK;
+		}
 		break;
 	default:
 		printk(KERN_ERR "aic32x4: invalid clock provider\n");
@@ -663,7 +1323,7 @@ static int aic32x4_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	snd_soc_component_update_bits(component, AIC32X4_IFACE2,
 				AIC32X4_DATA_OFFSET_MASK, iface_reg_2);
 	snd_soc_component_update_bits(component, AIC32X4_IFACE3,
-				AIC32X4_BCLKINV_MASK, iface_reg_3);
+				iface_reg_3_mask, iface_reg_3);
 
 	return 0;
 }
@@ -675,11 +1335,13 @@ static int aic32x4_set_aosr(struct snd_soc_component *component, u8 aosr)
 
 static int aic32x4_set_dosr(struct snd_soc_component *component, u16 dosr)
 {
-	snd_soc_component_write(component, AIC32X4_DOSRMSB, dosr >> 8);
-	snd_soc_component_write(component, AIC32X4_DOSRLSB,
-		      (dosr & 0xff));
+	int ret;
 
-	return 0;
+	ret = snd_soc_component_write(component, AIC32X4_DOSRMSB, dosr >> 8);
+	if (ret)
+		return ret;
+	return snd_soc_component_write(component, AIC32X4_DOSRLSB,
+				       dosr & 0xff);
 }
 
 static int aic32x4_set_processing_blocks(struct snd_soc_component *component,
@@ -701,6 +1363,54 @@ static int aic32x4_set_processing_blocks(struct snd_soc_component *component,
 	}
 
 	return 0;
+}
+
+#define AIC32X4_PUFFIN_MCLK_RATE	9600000
+#define AIC32X4_PUFFIN_SAMPLE_RATE	48000
+
+static int aic32x4_setup_puffin_48k_clocks(
+		struct snd_soc_component *component,
+		struct clk_bulk_data *clocks)
+{
+	int ret;
+
+	/*
+	 * Reproduce the codec-owned 3.18 Radar-Puffin clock transaction:
+	 *
+	 *   MCLK  = 9.6 MHz
+	 *   PLL   = 9.6 MHz * 48 / 5 = 92.16 MHz
+	 *   DACFS = 92.16 MHz / 5 / 3 / 128 = 48 kHz
+	 *   ADCFS = 92.16 MHz / 5 / 3 / 128 = 48 kHz
+	 *
+	 * Keep CCF as the sole owner.  The matching clock-provider special case
+	 * below makes the PLL rate request use the stock P=5/J=48/D=0 encoding.
+	 */
+	ret = clk_set_rate(clocks[0].clk, 92160000);
+	if (ret)
+		return ret;
+	ret = clk_set_rate(clocks[1].clk, 18432000);
+	if (ret)
+		return ret;
+	ret = clk_set_rate(clocks[2].clk, 6144000);
+	if (ret)
+		return ret;
+	ret = aic32x4_set_aosr(component, 128);
+	if (ret)
+		return ret;
+	ret = clk_set_rate(clocks[3].clk, 18432000);
+	if (ret)
+		return ret;
+	ret = clk_set_rate(clocks[4].clk, 6144000);
+	if (ret)
+		return ret;
+	ret = aic32x4_set_dosr(component, 128);
+	if (ret)
+		return ret;
+	ret = clk_set_rate(clocks[5].clk, 6144000);
+	if (ret)
+		return ret;
+
+	return aic32x4_set_processing_blocks(component, 1, 2);
 }
 
 static int aic32x4_setup_clocks(struct snd_soc_component *component,
@@ -728,16 +1438,32 @@ static int aic32x4_setup_clocks(struct snd_soc_component *component,
 	ret = devm_clk_bulk_get(component->dev, ARRAY_SIZE(clocks), clocks);
 	if (ret)
 		return ret;
+	if (aic32x4->type == AIC32X4_TYPE_AIC32X4 &&
+	    sample_rate == AIC32X4_PUFFIN_SAMPLE_RATE &&
+	    clk_get_rate(clk_get_parent(clocks[0].clk)) ==
+						AIC32X4_PUFFIN_MCLK_RATE)
+		return aic32x4_setup_puffin_48k_clocks(component, clocks);
 
 	if (sample_rate <= 48000) {
 		aosr = 128;
 		adc_resource_class = 6;
 		dac_resource_class = 8;
 		dosr_increment = 8;
-		if (aic32x4->type == AIC32X4_TYPE_TAS2505)
+		if (aic32x4->type == AIC32X4_TYPE_TAS2505) {
 			aic32x4_set_processing_blocks(component, 0, 1);
-		else
+		} else if (aic32x4->type == AIC32X4_TYPE_AIC32X4) {
+			/*
+			 * Radar-Puffin uses PRB_P2 and its calibrated six-biquad
+			 * speaker profile.  PRB_P2 is resource class 12, so select
+			 * it before solving the divider tree.  Solving as PRB_P1/RC8
+			 * permits MDAC=2 with DOSR=128, below PRB_P2's requirement;
+			 * RC12 requires MDAC >= 3 for that DOSR, matching 3.18.
+			 */
+			dac_resource_class = 12;
+			aic32x4_set_processing_blocks(component, 1, 2);
+		} else {
 			aic32x4_set_processing_blocks(component, 1, 1);
+		}
 	} else if (sample_rate <= 96000) {
 		aosr = 64;
 		adc_resource_class = 6;
@@ -787,28 +1513,39 @@ static int aic32x4_setup_clocks(struct snd_soc_component *component,
 						if (clk_round_rate(clocks[0].clk, dac_clock_rate) == 0)
 							continue;
 
-						clk_set_rate(clocks[0].clk,
-							dac_clock_rate);
+						ret = clk_set_rate(clocks[0].clk,
+							   dac_clock_rate);
+						if (ret)
+							return ret;
 
-						clk_set_rate(clocks[1].clk,
-							sample_rate * aosr *
-							madc);
-						clk_set_rate(clocks[2].clk,
-							sample_rate * aosr);
-						aic32x4_set_aosr(component,
-							aosr);
+						ret = clk_set_rate(clocks[1].clk,
+							   sample_rate * aosr * madc);
+						if (ret)
+							return ret;
+						ret = clk_set_rate(clocks[2].clk,
+							   sample_rate * aosr);
+						if (ret)
+							return ret;
+						ret = aic32x4_set_aosr(component, aosr);
+						if (ret)
+							return ret;
 
-						clk_set_rate(clocks[3].clk,
-							sample_rate * dosr *
-							mdac);
-						clk_set_rate(clocks[4].clk,
-							sample_rate * dosr);
-						aic32x4_set_dosr(component,
-							dosr);
+						ret = clk_set_rate(clocks[3].clk,
+							   sample_rate * dosr * mdac);
+						if (ret)
+							return ret;
+						ret = clk_set_rate(clocks[4].clk,
+							   sample_rate * dosr);
+						if (ret)
+							return ret;
+						ret = aic32x4_set_dosr(component, dosr);
+						if (ret)
+							return ret;
 
-						clk_set_rate(clocks[5].clk,
-							sample_rate * channels *
-							bit_depth);
+						ret = clk_set_rate(clocks[5].clk,
+							   sample_rate * channels * bit_depth);
+						if (ret)
+							return ret;
 
 						return 0;
 					}
@@ -830,10 +1567,38 @@ static int aic32x4_hw_params(struct snd_pcm_substream *substream,
 	struct aic32x4_priv *aic32x4 = snd_soc_component_get_drvdata(component);
 	u8 iface1_reg = 0;
 	u8 dacsetup_reg = 0;
+	int ret;
 
-	aic32x4_setup_clocks(component, params_rate(params),
-			     params_channels(params),
-			     params_physical_width(params));
+	/*
+	 * The working 3.18 speaker codec asserts the physical MFP2 gate and
+	 * both headphone-driver mutes before touching the PLL/divider tree.
+	 * Keep that ordering across the modern CCF clock setup: the AIC32X4
+	 * DAC PGA gain engine must be allowed to ramp with the analog outputs
+	 * isolated, otherwise P0_R38 remains 0x00 even after the HP gain flag
+	 * (P1_R63) reports applied.
+	 */
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		ret = snd_soc_component_write(component, AIC32X4_DOUTCTL,
+					      AIC32X4_MFP_GPIO_ENABLED |
+					      AIC32X4_MFP2_GPIO_OUT_HIGH);
+		if (ret < 0)
+			return ret;
+		ret = snd_soc_component_update_bits(component, AIC32X4_HPLGAIN,
+						    BIT(6), BIT(6));
+		if (ret < 0)
+			return ret;
+		ret = snd_soc_component_update_bits(component, AIC32X4_HPRGAIN,
+						    BIT(6), BIT(6));
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = aic32x4_setup_clocks(component, params_rate(params),
+				params_channels(params),
+				params_physical_width(params));
+	if (ret)
+		return ret;
+	aic32x4_log_playback_state(component, "codec-hw_params-after-clocks");
 
 	switch (params_physical_width(params)) {
 	case 16:
@@ -857,8 +1622,16 @@ static int aic32x4_hw_params(struct snd_pcm_substream *substream,
 				AIC32X4_IFACE1_DATALEN_MASK, iface1_reg);
 
 	if (params_channels(params) == 1) {
-		dacsetup_reg = AIC32X4_RDAC2LCHN | AIC32X4_LDAC2LCHN;
+		aic32x4->playback_mono = true;
+		/*
+		 * Radar-Puffin is the stock MonoRight speaker path.  The
+		 * working 3.18 speaker codec feeds the right serial slot to
+		 * both DACs (0x24); feeding the left slot here leaves the
+		 * physical speaker path silent even though the PCM runs.
+		 */
+		dacsetup_reg = AIC32X4_RDAC2RCHN | AIC32X4_LDAC2RCHN;
 	} else {
+		aic32x4->playback_mono = false;
 		if (aic32x4->swapdacs)
 			dacsetup_reg = AIC32X4_RDAC2LCHN | AIC32X4_LDAC2RCHN;
 		else
@@ -866,18 +1639,120 @@ static int aic32x4_hw_params(struct snd_pcm_substream *substream,
 	}
 	snd_soc_component_update_bits(component, AIC32X4_DACSETUP,
 				AIC32X4_DAC_CHAN_MASK, dacsetup_reg);
+	dev_info(component->dev,
+		 "hw_params playback channels=%u dacsetup_route=0x%02x\n",
+		 params_channels(params), dacsetup_reg);
+	aic32x4_log_playback_state(component, "codec-hw_params-end");
 
+	return 0;
+}
+
+static int aic32x4_playback_fail_closed(struct snd_soc_component *component,
+						int original_error)
+{
+	int ret;
+
+	/* Keep the codec DAC muted on any error.  MFP2 is already asserted by
+	 * the caller before entering this cleanup path. */
+	ret = snd_soc_component_update_bits(component, AIC32X4_DACMUTE,
+						AIC32X4_MUTEON, AIC32X4_MUTEON);
+	if (ret < 0)
+		dev_err(component->dev,
+			"failed to reassert DAC playback mute: %d\n", ret);
+	return original_error;
+}
+
+static int aic32x4_apply_playback_mute(struct snd_soc_component *component,
+						struct aic32x4_priv *aic32x4,
+						int mute)
+{
+	unsigned int gain_ready_mask;
+	unsigned int unmute_state;
+	unsigned int retry = 0;
+	int status;
+	int ret;
+
+	/* Match the working 3.18 sequence: assert the physical gate before
+	 * every fallible codec read or write. */
+	ret = snd_soc_component_write(component, AIC32X4_DOUTCTL,
+				      AIC32X4_MFP_GPIO_ENABLED |
+				      AIC32X4_MFP2_GPIO_OUT_HIGH);
+	if (ret < 0)
+		return ret;
+	aic32x4_log_playback_state(component,
+					   mute ? "mute-asserted" : "unmute-before-wait");
+
+	status = snd_soc_component_read(component, AIC32X4_DACMUTE);
+	if (status < 0)
+		return aic32x4_playback_fail_closed(component, status);
+	unmute_state = status & ~AIC32X4_MUTEON;
+
+	if (mute) {
+		ret = snd_soc_component_write(component, AIC32X4_DACMUTE,
+					      unmute_state | AIC32X4_MUTEON);
+		if (ret < 0)
+			return aic32x4_playback_fail_closed(component, ret);
+		return 0;
+	}
+
+	if (aic32x4->playback_mono) {
+		unmute_state |= AIC32X4_UNMUTE_MONO;
+		gain_ready_mask = AIC32X4_GAIN_APPLIED_MONO;
+	} else {
+		gain_ready_mask = AIC32X4_GAIN_APPLIED_STEREO;
+	}
+
+	status = snd_soc_component_read(component, AIC32X4_GAIN_APPLIED);
+	if (status < 0)
+		return aic32x4_playback_fail_closed(component, status);
+	while ((status & gain_ready_mask) != gain_ready_mask &&
+	       retry < AIC32X4_GAIN_APPLIED_RETRIES) {
+		msleep(AIC32X4_GAIN_APPLIED_POLL_MS);
+		status = snd_soc_component_read(component, AIC32X4_GAIN_APPLIED);
+		if (status < 0)
+			return aic32x4_playback_fail_closed(component, status);
+		retry++;
+	}
+	if ((status & gain_ready_mask) != gain_ready_mask)
+		dev_warn(component->dev,
+			 "DAC gain-applied timeout (state=%x mask=%x); continuing unmute\n",
+			 status, gain_ready_mask);
+
+	/* The mono codec state is 0x08, as in the working 3.18 driver. */
+	ret = snd_soc_component_write(component, AIC32X4_DACMUTE,
+				      unmute_state);
+	if (ret < 0)
+		return aic32x4_playback_fail_closed(component, ret);
+
+	/* Release MFP2 only after the DAC is successfully unmuted. */
+	ret = snd_soc_component_write(component, AIC32X4_DOUTCTL,
+				      AIC32X4_MFP_GPIO_ENABLED);
+	if (ret < 0)
+		return aic32x4_playback_fail_closed(component, ret);
+	aic32x4_log_playback_state(component, "unmute-complete");
+
+	dev_info(component->dev,
+		 "playback unmute synchronous gain=%x retries=%u mono=%u\n",
+		 status, retry, aic32x4->playback_mono);
 	return 0;
 }
 
 static int aic32x4_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
 	struct snd_soc_component *component = dai->component;
+	struct aic32x4_priv *aic32x4 =
+		snd_soc_component_get_drvdata(component);
 
-	snd_soc_component_update_bits(component, AIC32X4_DACMUTE,
-				AIC32X4_MUTEON, mute ? AIC32X4_MUTEON : 0);
+	if (direction == SNDRV_PCM_STREAM_PLAYBACK &&
+	    aic32x4->defer_playback_unmute) {
+		/* The 3.18 AIC32x4 path performs this synchronously from the
+		 * link trigger, before the MT8163 AFE start callback. */
+		return aic32x4_apply_playback_mute(component, aic32x4, mute);
+	}
 
-	return 0;
+	return snd_soc_component_update_bits(component, AIC32X4_DACMUTE,
+					     AIC32X4_MUTEON,
+					     mute ? AIC32X4_MUTEON : 0);
 }
 
 static int aic32x4_set_bias_level(struct snd_soc_component *component,
@@ -894,6 +1769,7 @@ static int aic32x4_set_bias_level(struct snd_soc_component *component,
 	ret = devm_clk_bulk_get(component->dev, ARRAY_SIZE(clocks), clocks);
 	if (ret)
 		return ret;
+	aic32x4_log_playback_state(component, "bias-enter");
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -906,15 +1782,15 @@ static int aic32x4_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		/* Initial cold start */
+		/* CCF owns both divider rate fields and enable bits. */
 		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
 			break;
-
 		clk_bulk_disable_unprepare(ARRAY_SIZE(clocks), clocks);
 		break;
 	case SND_SOC_BIAS_OFF:
 		break;
 	}
+	aic32x4_log_playback_state(component, "bias-exit");
 	return 0;
 }
 
@@ -923,7 +1799,38 @@ static int aic32x4_set_bias_level(struct snd_soc_component *component,
 			 | SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S24_3LE \
 			 | SNDRV_PCM_FMTBIT_S32_LE)
 
+static int aic32x4_playback_startup(struct snd_pcm_substream *substream,
+					    struct snd_soc_dai *dai)
+{
+	struct snd_soc_component *component = dai->component;
+	struct aic32x4_priv *aic32x4 =
+		snd_soc_component_get_drvdata(component);
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		mutex_lock(&aic32x4->diag_lock);
+		aic32x4->playback_active = true;
+		mutex_unlock(&aic32x4->diag_lock);
+	}
+	return 0;
+}
+
+static void aic32x4_playback_shutdown(struct snd_pcm_substream *substream,
+					      struct snd_soc_dai *dai)
+{
+	struct snd_soc_component *component = dai->component;
+	struct aic32x4_priv *aic32x4 =
+		snd_soc_component_get_drvdata(component);
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		mutex_lock(&aic32x4->diag_lock);
+		aic32x4->playback_active = false;
+		mutex_unlock(&aic32x4->diag_lock);
+	}
+}
+
 static const struct snd_soc_dai_ops aic32x4_ops = {
+	.startup = aic32x4_playback_startup,
+	.shutdown = aic32x4_playback_shutdown,
 	.hw_params = aic32x4_hw_params,
 	.mute_stream = aic32x4_mute,
 	.set_fmt = aic32x4_set_dai_fmt,
@@ -1001,6 +1908,8 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 	u32 tmp_reg;
 	int ret;
 
+	aic32x4->component = component;
+
 	static struct clk_bulk_data clocks[] = {
 		{ .id = "codec_clkin" },
 		{ .id = "pll" },
@@ -1018,6 +1927,22 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 	clk_set_parent(clocks[0].clk, clocks[1].clk);
 	clk_set_parent(clocks[2].clk, clocks[3].clk);
 
+	/*
+	 * Match the working Puffin 3.18 bootstrap: feed the speaker
+	 * outputs from the left/right DACs and leave the analogue input
+	 * route disconnected.  The DAPM controls remain available for
+	 * userspace, but a fresh codec must already have the physical
+	 * speaker route established before the first PCM stream.
+	 */
+	ret = snd_soc_component_update_bits(component, AIC32X4_HPLROUTE,
+					    BIT(3), BIT(3));
+	if (ret < 0)
+		return ret;
+	ret = snd_soc_component_update_bits(component, AIC32X4_HPRROUTE,
+					    BIT(3) | BIT(2), BIT(3));
+	if (ret < 0)
+		return ret;
+
 	/* Power platform configuration */
 	if (aic32x4->power_cfg & AIC32X4_PWR_MICBIAS_2075_LDOIN) {
 		snd_soc_component_write(component, AIC32X4_MICBIAS,
@@ -1030,7 +1955,7 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 			AIC32X4_LDOCTLEN : 0;
 	snd_soc_component_write(component, AIC32X4_LDOCTL, tmp_reg);
 
-	tmp_reg = snd_soc_component_read(component, AIC32X4_CMMODE);
+	tmp_reg = AIC32X4_HP_CMMODE;
 	if (aic32x4->power_cfg & AIC32X4_PWR_CMMODE_LDOIN_RANGE_18_36)
 		tmp_reg |= AIC32X4_LDOIN_18_36;
 	if (aic32x4->power_cfg & AIC32X4_PWR_CMMODE_HP_LDOIN_POWERED)
@@ -1051,6 +1976,13 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 		snd_soc_component_write(component, AIC32X4_RMICPGANIN,
 				AIC32X4_RMICPGANIN_CM1R_10K);
 
+	/* The old codec driver forced the reset-to-standby transition here. */
+	ret = aic32x4_set_bias_level(component, SND_SOC_BIAS_STANDBY);
+	if (ret < 0)
+		return ret;
+
+	/* Match the working 3.18 probe: keep the external amplifier muted while
+	 * the ADC workaround and analogue reference are brought up. */
 	/*
 	 * Workaround: for an unknown reason, the ADC needs to be powered up
 	 * and down for the first capture to work properly. It seems related to
@@ -1060,14 +1992,46 @@ static int aic32x4_component_probe(struct snd_soc_component *component)
 	snd_soc_component_write(component, AIC32X4_ADCSETUP, tmp_reg |
 				AIC32X4_LADC_EN | AIC32X4_RADC_EN);
 	snd_soc_component_write(component, AIC32X4_ADCSETUP, tmp_reg);
+	ret = snd_soc_component_write(component, AIC32X4_DOUTCTL,
+				      AIC32X4_MFP_GPIO_ENABLED |
+				      AIC32X4_MFP2_GPIO_OUT_HIGH);
+	if (ret < 0)
+		return ret;
+
+	/* Match the working 3.18 board bootstrap: MFP3/SCLK is unused and
+	 * must not retain the codec reset default (0x02). */
+	snd_soc_component_write(component, AIC32X4_SCLKCTL, 0);
 
 	/*
 	 * Enable the fast charging feature and ensure the needed 40ms ellapsed
 	 * before using the analog circuits.
 	 */
+	/* The working 3.18 AIC32x4 path uses normal 40 ms reference startup
+	 * (P1_R123=0x01).  0x05 is the force-power-up variant and leaves the
+	 * codec's DAC PGA gain-applied status at 0x00 on 6.1. */
 	snd_soc_component_write(component, AIC32X4_REFPOWERUP,
-				AIC32X4_REFPOWERUP_40MS);
+				AIC32X4_REFPOWERUP_NORMAL_40MS);
 	msleep(40);
+
+	/*
+	 * Set the DAC digital volume to 0 dB (full volume).  The DACVOL
+	 * register is an attenuation control: 0x00 = 0 dB, higher values
+	 * = quieter.  Without this, the codec starts at a high attenuation
+	 * and the "PCM Playback Volume" mixer control maps to -60 dB.
+	 * The 3.18 driver leaves DACVOL=0x00 (0 dB, full volume).
+	 */
+	snd_soc_component_write(component, AIC32X4_LDACVOL, 0);
+	snd_soc_component_write(component, AIC32X4_RDACVOL, 0);
+
+#if IS_ENABLED(CONFIG_SND_SOC_TLV320AIC32X4_PRB25_DIAG)
+	if (aic32x4->type == AIC32X4_TYPE_AIC32X4) {
+		ret = snd_soc_add_component_controls(component,
+					     aic32x4_diag_controls,
+					     ARRAY_SIZE(aic32x4_diag_controls));
+		if (ret)
+			return ret;
+	}
+#endif
 
 	return 0;
 }
@@ -1077,10 +2041,19 @@ static int aic32x4_of_xlate_dai_id(struct snd_soc_component *component,
 {
 	/* return dai id 0, whatever the endpoint index */
 	return 0;
+
+}
+
+static void aic32x4_component_remove(struct snd_soc_component *component)
+{
+	struct aic32x4_priv *aic32x4 = snd_soc_component_get_drvdata(component);
+
+	aic32x4->component = NULL;
 }
 
 static const struct snd_soc_component_driver soc_component_dev_aic32x4 = {
 	.probe			= aic32x4_component_probe,
+	.remove			= aic32x4_component_remove,
 	.set_bias_level		= aic32x4_set_bias_level,
 	.controls		= aic32x4_snd_controls,
 	.num_controls		= ARRAY_SIZE(aic32x4_snd_controls),
@@ -1203,6 +2176,7 @@ static int aic32x4_tas2505_component_probe(struct snd_soc_component *component)
 
 static const struct snd_soc_component_driver soc_component_dev_aic32x4_tas2505 = {
 	.probe			= aic32x4_tas2505_component_probe,
+	.remove			= aic32x4_component_remove,
 	.set_bias_level		= aic32x4_set_bias_level,
 	.controls		= aic32x4_tas2505_snd_controls,
 	.num_controls		= ARRAY_SIZE(aic32x4_tas2505_snd_controls),
@@ -1243,6 +2217,18 @@ static int aic32x4_parse_dt(struct aic32x4_priv *aic32x4,
 	} else {
 		gpiod_set_consumer_name(aic32x4->rstn_gpio, "tlv320aic32x4_rstn");
 	}
+	/*
+	 * Radar-Puffin hardcodes the analog power configuration exactly as
+	 * the working Linux 3.18 driver does in its parse_dt.  Without these
+	 * flags the probe skips PWRCFG, LDOCTL, and CMMODE writes, leaving
+	 * the HP common-mode feedback disabled (CMMODE=0x00 vs 0x33) and
+	 * the output stage without DC bias — the root cause of silent
+	 * playback despite a running DAC datapath.
+	 */
+	aic32x4->power_cfg = AIC32X4_PWR_AVDD_DVDD_WEAK_DISABLE |
+			     AIC32X4_PWR_AIC32X4_LDO_ENABLE |
+			     AIC32X4_PWR_CMMODE_LDOIN_RANGE_18_36 |
+			     AIC32X4_PWR_CMMODE_HP_LDOIN_POWERED;
 
 	if (of_property_read_u32_array(np, "aic32x4-gpio-func",
 				aic32x4_setup->gpio_func, 5) >= 0)
@@ -1365,6 +2351,9 @@ int aic32x4_probe(struct device *dev, struct regmap *regmap,
 
 	aic32x4->dev = dev;
 	aic32x4->type = type;
+	aic32x4->defer_playback_unmute =
+		aic32x4->type == AIC32X4_TYPE_AIC32X4;
+	mutex_init(&aic32x4->diag_lock);
 
 	dev_set_drvdata(dev, aic32x4);
 
@@ -1396,6 +2385,8 @@ int aic32x4_probe(struct device *dev, struct regmap *regmap,
 	ret = regmap_write(regmap, AIC32X4_RESET, 0x01);
 	if (ret)
 		goto err_disable_regulators;
+	/* The 3.18 driver waits after the codec software reset completes. */
+	mdelay(1);
 
 	ret = aic32x4_register_clocks(dev, aic32x4->mclk_name);
 	if (ret)

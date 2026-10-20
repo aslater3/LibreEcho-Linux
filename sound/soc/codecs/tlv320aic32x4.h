@@ -109,6 +109,9 @@ int aic32x4_register_clocks(struct device *dev, const char *mclk_name);
 #define TAS2505_REFPOWERUP	AIC32X4_REG(1, 122)
 #define AIC32X4_REFPOWERUP	AIC32X4_REG(1, 123)
 
+/* Radar-Puffin's playback profile ends at the final page-46 DRC coefficient. */
+#define AIC32X4_MAX_DSP_REG	AIC32X4_REG(46, 75)
+
 /* Bits, masks, and shifts */
 
 /* AIC32X4_CLKMUX */
@@ -189,6 +192,7 @@ int aic32x4_register_clocks(struct device *dev, const char *mclk_name);
 
 /* AIC32X4_DACMUTE */
 #define AIC32X4_MUTEON			0x0C
+#define AIC32X4_UNMUTE_MONO		0x08
 
 /* AIC32X4_ADCSETUP */
 #define AIC32X4_LADC_EN			BIT(7)
@@ -203,6 +207,7 @@ int aic32x4_register_clocks(struct device *dev, const char *mclk_name);
 /* AIC32X4_CMMODE */
 #define AIC32X4_LDOIN_18_36		BIT(0)
 #define AIC32X4_LDOIN2HP		BIT(1)
+#define AIC32X4_HP_CMMODE		0x30
 
 /* AIC32X4_MICBIAS */
 #define AIC32X4_MICBIAS_LDOIN		BIT(3)
@@ -219,6 +224,7 @@ int aic32x4_register_clocks(struct device *dev, const char *mclk_name);
 
 /* AIC32X4_REFPOWERUP */
 #define AIC32X4_REFPOWERUP_SLOW		0x04
+#define AIC32X4_REFPOWERUP_NORMAL_40MS	0x01
 #define AIC32X4_REFPOWERUP_40MS		0x05
 #define AIC32X4_REFPOWERUP_80MS		0x06
 #define AIC32X4_REFPOWERUP_120MS	0x07
