@@ -17,6 +17,17 @@ menuconfig THERMAL
 
 if THERMAL
 
+config AMAZON_VIRTUAL_SENSOR_THERMISTOR
+	tristate "Amazon MT8163 virtual sensor thermistor"
+	depends on OF
+	depends on IIO
+	default y if MACH_MT8163
+	help
+	  Enable the IIO-backed NCP15XH103 thermistors used by Amazon
+	  Radar-Puffin/Giza MT8163 boards. The driver preserves the vendor
+	  per-device temp and writable params sysfs attributes and exposes
+	  each sensor through the Linux thermal framework.
+
 config THERMAL_NETLINK
 	bool "Thermal netlink management"
 	depends on NET
