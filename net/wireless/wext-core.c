@@ -700,6 +700,8 @@ static iw_handler get_handler(struct net_device *dev, unsigned int cmd)
 	/* Don't "optimise" the following variable, it will crash */
 	unsigned int	index;		/* *MUST* be unsigned */
 	const struct iw_handler_def *handlers = NULL;
+	const struct iw_handler_def *cfg_handlers = NULL;
+	iw_handler handler = NULL;
 
 #ifdef CONFIG_CFG80211_WEXT
 	if (dev->ieee80211_ptr && dev->ieee80211_ptr->wiphy) {
@@ -707,7 +709,7 @@ static iw_handler get_handler(struct net_device *dev, unsigned int cmd)
 		if (dev->ieee80211_ptr->wiphy->flags & (WIPHY_FLAG_SUPPORTS_MLO |
 							WIPHY_FLAG_DISABLE_WEXT))
 			return NULL;
-		handlers = dev->ieee80211_ptr->wiphy->wext;
+		cfg_handlers = dev->ieee80211_ptr->wiphy->wext;
 	}
 #endif
 #ifdef CONFIG_WIRELESS_EXT
@@ -715,18 +717,26 @@ static iw_handler get_handler(struct net_device *dev, unsigned int cmd)
 		handlers = dev->wireless_handlers;
 #endif
 
-	if (!handlers)
+	if (!handlers && !cfg_handlers)
 		return NULL;
 
-	/* Try as a standard command */
+	/* Prefer a device standard handler, then use cfg80211 compatibility.
+	 * Some drivers expose only private WEXT handlers on the netdev while
+	 * implementing standard scan/connect operations through cfg80211.
+	 */
 	index = IW_IOCTL_IDX(cmd);
-	if (index < handlers->num_standard)
-		return handlers->standard[index];
+	if (handlers && index < handlers->num_standard)
+		handler = handlers->standard[index];
+	if (handler)
+		return handler;
+	if (cfg_handlers && cfg_handlers != handlers &&
+	    index < cfg_handlers->num_standard)
+		return cfg_handlers->standard[index];
 
 #ifdef CONFIG_WEXT_PRIV
-	/* Try as a private command */
+	/* Private commands remain owned by the device handler table. */
 	index = cmd - SIOCIWFIRSTPRIV;
-	if (index < handlers->num_private)
+	if (handlers && index < handlers->num_private)
 		return handlers->private[index];
 #endif
 
