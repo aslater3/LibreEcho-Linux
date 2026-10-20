@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 TESTS = (
     "libreecho/test_targets.py",
+    "libreecho/test_next_lts_canary.py",
     "drivers/usb/musb/test_mt8163_console_diag_contract.py",
     "drivers/usb/musb/test_mt8163_role_switch_contract.py",
     "drivers/misc/test_amz_privacy_atomic_context.py",

@@ -3,10 +3,12 @@
 # and report which commits apply cleanly.  If every commit applies, also try
 # to build the production defconfig.
 #
-# Our commits are the non-merge commits on the first-parent chain since the
-# 6.1 branch point: stable updates arrive as merges and are skipped.
+# Our commits are the non-merge commits not reachable from the upstream
+# stable tag the tree is on (v6.1.SUBLEVEL from the Makefile), so stable
+# merges and the merges of our own pull requests are both handled.
 #
 #   libreecho/next_lts_canary.sh [--strict] [NEXT_LTS]    (default 6.18)
+#   libreecho/next_lts_canary.sh --list-series   (print the series and exit)
 #
 # Writes a Markdown report to stdout (and to $GITHUB_STEP_SUMMARY when set).
 # Exits non-zero on infrastructure errors; with --strict, also when a commit
@@ -14,10 +16,11 @@
 set -euo pipefail
 
 STRICT=0
-if [ "${1:-}" = "--strict" ]; then
-	STRICT=1
-	shift
-fi
+LIST_ONLY=0
+case "${1:-}" in
+--strict) STRICT=1; shift ;;
+--list-series) LIST_ONLY=1; shift ;;
+esac
 NEXT_LTS=${1:-6.18}
 BRANCH_POINT=${BRANCH_POINT:-v6.1.178}
 STABLE_URL=${STABLE_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git}
@@ -29,13 +32,25 @@ cd "$root"
 if ! git rev-parse -q --verify "refs/tags/$BRANCH_POINT" >/dev/null; then
 	git fetch -q --depth 1 "$STABLE_URL" "refs/tags/$BRANCH_POINT:refs/tags/$BRANCH_POINT"
 fi
+# The stable release this tree has been merged up to.  Fetch its history back
+# to the branch point so that rev-list can exclude every upstream commit.
+base=$(make -s -C "$root" kernelversion | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/v\1/')
+if [ "$base" != "$BRANCH_POINT" ] &&
+	! git rev-parse -q --verify "refs/tags/$base" >/dev/null; then
+	git fetch -q --shallow-exclude="$BRANCH_POINT" "$STABLE_URL" "refs/tags/$base:refs/tags/$base"
+fi
+
+mapfile -t series < <(git rev-list --reverse --topo-order --no-merges HEAD "^$BRANCH_POINT" "^$base")
+[ "${#series[@]}" -gt 0 ] || { echo "no LibreEcho commits since $base" >&2; exit 2; }
+if [ "$LIST_ONLY" -eq 1 ]; then
+	printf '%s\n' "${series[@]}"
+	exit 0
+fi
+
 tag=$(git ls-remote --tags --refs "$STABLE_URL" "v$NEXT_LTS.*" |
 	awk -F/ '{print $3}' | sort -V | tail -1)
 [ -n "$tag" ] || { echo "no v$NEXT_LTS.y tag found" >&2; exit 2; }
 git fetch -q --depth 1 "$STABLE_URL" "refs/tags/$tag:refs/tags/$tag"
-
-mapfile -t series < <(git rev-list --reverse --first-parent --no-merges "$BRANCH_POINT..HEAD")
-[ "${#series[@]}" -gt 0 ] || { echo "no LibreEcho commits since $BRANCH_POINT" >&2; exit 2; }
 
 tree="$WORK/tree"
 git worktree add -q --detach "$tree" "$tag"
