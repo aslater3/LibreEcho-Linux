@@ -1,0 +1,68 @@
+name: Next LTS canary
+
+# Nightly: replay the LibreEcho series onto the latest stable release of
+# the next LTS and report which commits still need porting.  This reports
+# without failing until the port lands; run it with "strict" to gate.
+
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+    inputs:
+      next_lts:
+        description: Next LTS series, for example 6.18
+        default: "6.18"
+      strict:
+        description: Fail if any commit does not apply or the build fails
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: next-lts-canary
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    name: Replay series onto the next LTS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out Linux source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Enough to reach the 6.1 branch point along the first-parent chain.
+          fetch-depth: 1000
+
+      - name: Install ARM32 build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils-arm-linux-gnueabihf bison build-essential flex \
+            gcc-arm-linux-gnueabihf libelf-dev libssl-dev python3
+
+      - name: Replay and build
+        shell: bash
+        env:
+          NEXT_LTS: ${{ inputs.next_lts || '6.18' }}
+          STRICT: ${{ inputs.strict && '--strict' || '' }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/canary" && mkdir -p "$WORK" && export WORK
+          libreecho/next_lts_canary.sh $STRICT "$NEXT_LTS"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: next-lts-canary-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/canary/report.md
+            ${{ runner.temp }}/canary/build.log
