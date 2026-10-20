@@ -1,8 +1,13 @@
-# LibreEcho-Linux-6.1 — Agent Instructions
+# LibreEcho-Linux — Agent Instructions
 
-This repository owns the Linux 6.1 LTS-based kernel, device-tree sources,
-defconfig, and drivers for the LibreEcho target. Read `README.md` before
-non-trivial work.
+This repository owns the LTS-based Linux kernel, device-tree sources,
+defconfig, and drivers for the LibreEcho target, on upstream stable history.
+The MT8163 connectivity stack is maintained separately in
+LibreEcho-mt8163-connectivity. Read `README.md` before non-trivial work.
+
+Run every source contract test with `python3 -B libreecho/run_contract_tests.py`.
+Add any new contract test to its `TESTS` list; the runner fails on
+contract tests it does not list.
 
 # Branching, Pull Requests, and Versioning
 
