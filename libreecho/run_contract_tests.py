@@ -21,6 +21,7 @@ TESTS = (
     "drivers/misc/test_amz_privacy_atomic_context.py",
     "drivers/misc/test_libreecho_radar_puffin_keys.py",
     "drivers/leds/test_is31fl32xx_init_contract.py",
+    "drivers/leds/test_is31fl3236_scaled_frame_contract.py",
     "drivers/thermal/test_amazon_thermistor_policy_contract.py",
     "sound/soc/mediatek/mt8163/test_mt8163_mclk_pinctrl_contract.py",
     "sound/soc/mediatek/mt8163/test_mt8163_afe_irq_atomic_contract.py",
