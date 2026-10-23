@@ -6,13 +6,14 @@ on real upstream stable history. It is intentionally separate from
 owns ARM32 product tooling, initramfs, feature packaging, OTA verification, and
 the historical 3.18 compatibility tree.
 
-> **Status:** this repository replaces
-> [LibreEcho-Linux-6.1](https://github.com/aslater3/LibreEcho-Linux-6.1), which
-> is a flat snapshot without upstream history
-> ([LibreEcho-Linux-6.1#53](https://github.com/aslater3/LibreEcho-Linux-6.1/issues/53)).
-> It builds the same kernel as LibreEcho-Linux-6.1 (same sources, same
-> configuration); the production pipeline still builds from LibreEcho-Linux-6.1
-> until the build is migrated here.
+> **Status:** this is the production kernel. LibreEcho builds from it from
+> 0.14.5 and 0.15 onward (`release/X.Y.Z` branches here, as in the other
+> component repositories). It replaces
+> [LibreEcho-Linux-6.1](https://github.com/aslater3/LibreEcho-Linux-6.1), a
+> flat snapshot without upstream history that is archived and remains the
+> source for releases up to 0.14.4. The parity check below proves this tree
+> builds the shipped 0.14.4 kernel byte for byte. The kernel plan continues in
+> [#5](https://github.com/aslater3/LibreEcho-Linux/issues/5).
 
 ## Provenance and layout
 
