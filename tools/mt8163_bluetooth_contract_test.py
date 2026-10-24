@@ -33,11 +33,13 @@ class Mt8163BluetoothContractTests(unittest.TestCase):
         header = HCI_HEADER.read_text()
         sock = HCI_SOCK.read_text()
         self.assertIn("HCI_QUIRK_DEFERRED_SETUP", header)
+        # 6.18 keeps quirks in a bitmap behind hci_set_quirk()/hci_test_quirk().
         self.assertIn(
-            "set_bit(HCI_QUIRK_DEFERRED_SETUP, &mtk_hci.hdev->quirks);",
+            "hci_set_quirk(mtk_hci.hdev, HCI_QUIRK_DEFERRED_SETUP);",
             driver,
         )
         self.assertIn("opcode == MGMT_OP_SET_POWERED", sock)
+        self.assertIn("hci_test_quirk(hdev, HCI_QUIRK_DEFERRED_SETUP)", sock)
         self.assertNotIn("hci_dev_clear_flag(mtk_hci.hdev, HCI_SETUP);", driver)
 
     def test_bridge_keeps_explicit_hci_lifecycle_contract(self) -> None:
