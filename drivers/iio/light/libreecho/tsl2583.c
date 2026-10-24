@@ -1250,9 +1250,9 @@ unlock:
  * Client probe function - When a valid device is found, the driver's device
  * data structure is updated, and initialization completes successfully.
  */
-static int taos_probe(struct i2c_client *clientp,
-		      const struct i2c_device_id *idp)
+static int taos_probe(struct i2c_client *clientp)
 {
+	const struct i2c_device_id *idp = i2c_client_get_device_id(clientp);
 	int i, ret;
 	unsigned char buf[TSL258X_MAX_DEVICE_REGS];
 	struct tsl258x_chip *chip;
@@ -1304,7 +1304,7 @@ static int taos_probe(struct i2c_client *clientp,
 		goto fail2;
 	}
 
-	if (idp->driver_data != ID_UNKNOWN) {
+	if (idp && idp->driver_data != ID_UNKNOWN) {
 		chip->id = (int) idp->driver_data;
 	} else {
 		chip->id = taos_tsl258x_chip_id(buf);

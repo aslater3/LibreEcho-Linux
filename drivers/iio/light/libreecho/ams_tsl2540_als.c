@@ -510,7 +510,7 @@ static ssize_t tsl2540_als_enable_store(struct device *dev,
 	struct tsl2540_chip *chip = dev_get_drvdata(dev);
 	bool value;
 
-	if (strtobool(buf, &value))
+	if (kstrtobool(buf, &value))
 		return -EINVAL;
 
 	if (value)
@@ -540,7 +540,7 @@ static ssize_t tsl2540_auto_gain_enable_store(struct device *dev,
 	struct tsl2540_chip *chip = dev_get_drvdata(dev);
 	bool value;
 
-	if (strtobool(buf, &value))
+	if (kstrtobool(buf, &value))
 		return -EINVAL;
 
 	if (value)

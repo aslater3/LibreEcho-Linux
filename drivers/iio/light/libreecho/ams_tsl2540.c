@@ -615,8 +615,7 @@ static void tsl2540_setup(struct tsl2540_chip *chip)
 		tsl2540_configure_als_mode(chip, 1);
 }
 
-static int tsl2540_probe(struct i2c_client *client,
-	const struct i2c_device_id *idp)
+static int tsl2540_probe(struct i2c_client *client)
 {
 	int i, ret;
 	u8 id, rev, auxid;
