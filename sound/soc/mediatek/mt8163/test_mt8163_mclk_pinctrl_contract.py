@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 AFE = ROOT / "sound/soc/mediatek/mt8163/mt8163-afe.c"
 
 # These are the states selected by the AFE playback/output helpers.  The PMIC

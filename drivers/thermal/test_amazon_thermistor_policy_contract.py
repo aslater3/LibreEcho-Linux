@@ -38,7 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 DRIVER = ROOT / "drivers/thermal/amazon_virtual_sensor_thermistor.c"
-DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 
 # The transform's three ingredients. None may appear in the raw reader.
 TRANSFORM_TERMS = ("offset", "filter", "weight")

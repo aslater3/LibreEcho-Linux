@@ -57,7 +57,9 @@ def main() -> int:
         for pattern in ("**/test_*.py", "tools/mt8163_*_test.py")
         for p in ROOT.glob(pattern)
         if not str(p.relative_to(ROOT)).startswith(
-            ("tools/testing/", "scripts/", "Documentation/")
+            # Upstream's own Python tests, not LibreEcho contracts.
+            ("tools/testing/", "scripts/", "Documentation/",
+             "tools/crypto/ccp/", "tools/power/cpupower/bindings/")
         )
     }
     unlisted = sorted(owned - set(TESTS))

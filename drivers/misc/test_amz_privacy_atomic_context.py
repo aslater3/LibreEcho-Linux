@@ -160,7 +160,7 @@ def main():
                      text):
         failures.append("no work item is declared for amz_privacy_toggle_work()")
 
-    remove = function_body(text, "static int amz_privacy_remove(")
+    remove = function_body(text, "static void amz_privacy_remove(")
     if remove is None:
         failures.append("amz_privacy_remove() not found")
     elif "cancel_work_sync" not in remove:

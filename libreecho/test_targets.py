@@ -14,11 +14,11 @@ SCRIPT = HERE / "validate_targets.py"
 PARITY: dict[str, dict[str, object]] = {
     "radar_puffin": {
         "defconfig": "mt8163_arm32_defconfig",
-        "dtb": "libreecho-radar-puffin.dtb",
+        "dtb": "mediatek/libreecho-radar-puffin.dtb",
     },
     "biscuit": {
         "defconfig": "mt8163_arm32_defconfig",
-        "dtb": "libreecho-radar-puffin.dtb",
+        "dtb": "mediatek/libreecho-radar-puffin.dtb",
     },
 }
 
@@ -30,7 +30,7 @@ class TargetTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.table = self.root / "targets.json"
         self.config = self.root / "arch/arm/configs/mt8163_arm32_defconfig"
-        self.dts = self.root / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+        self.dts = self.root / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
         for path in (self.config, self.dts):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture\n")
@@ -93,7 +93,7 @@ class TargetTests(unittest.TestCase):
 
     def test_divergent_tuple_adds_a_build_without_code_changes(self):
         table = copy.deepcopy(PARITY)
-        table["biscuit"] = {"defconfig": "biscuit_defconfig", "dtb": "biscuit.dtb"}
+        table["biscuit"] = {"defconfig": "biscuit_defconfig", "dtb": "mediatek/biscuit.dtb"}
         (self.config.parent / "biscuit_defconfig").write_text("fixture\n")
         (self.dts.parent / "biscuit.dts").write_text("fixture\n")
         result = self.run_table(table)

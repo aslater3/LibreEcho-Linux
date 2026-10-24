@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / "drivers/misc/amz_privacy.c"
 KCONFIG = ROOT / "drivers/misc/Kconfig"
 DEFCONFIG = ROOT / "arch/arm/configs/mt8163_arm32_defconfig"
-DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 
 
 def body_of(source: str, signature: str, end: str) -> str:

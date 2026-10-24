@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 DEFCONFIG = ROOT / "arch/arm/configs/mt8163_arm32_defconfig"
 WORKFLOW = ROOT / ".github/workflows/checks.yml"
 RUNNER = ROOT / "libreecho/run_contract_tests.py"

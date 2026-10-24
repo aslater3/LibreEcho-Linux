@@ -27,7 +27,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFCONFIG = ROOT / "arch/arm/configs/mt8163_arm32_defconfig"
-PRODUCTION_DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+PRODUCTION_DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 README = ROOT / "README.md"
 
 _NODE_LINE = re.compile(

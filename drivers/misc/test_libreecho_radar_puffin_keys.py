@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+DTS = ROOT / "arch/arm/boot/dts/mediatek/libreecho-radar-puffin.dts"
 
 
 def node_body(text, node_name):
