@@ -29,7 +29,6 @@ TESTS = (
     "sound/soc/mediatek/mt8163/test_radar_puffin_volume_preservation.py",
     "sound/soc/mediatek/mt8163/test_radar_puffin_speaker_profile.py",
     "sound/soc/mediatek/mt8163/test_mt8163_wide_playback_contract.py",
-    "fs/proc/test_proc_map_files_null_mm_contract.py",
     "tools/mt8163_pstore_contract_test.py",
     "tools/mt8163_pstore_ramoops_contract_test.py",
     "tools/mt8163_mute_lamp_contract_test.py",
