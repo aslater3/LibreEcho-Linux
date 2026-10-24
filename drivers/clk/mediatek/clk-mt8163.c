@@ -19,11 +19,13 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/mfd/syscon.h>
+#include <linux/platform_device.h>
 
 #include "clk-mtk.h"
 #include "clk-gate.h"
 #include "clk-mux.h"
 #include "clk-pll.h"
+#include "reset.h"
 
 #include <dt-bindings/clock/mt8163-clk.h>
 
@@ -877,10 +879,35 @@ static void __init mtk_infrasys_init(struct device_node *node)
 	if (r)
 		pr_err("%s(): could not register clock provider: %d\n",
 			__func__, r);
-
-	mtk_register_reset_controller(node, &mt8163_rst_desc);
 }
-CLK_OF_DECLARE(mtk_infrasys, "mediatek,mt8163-infracfg", mtk_infrasys_init);
+/*
+ * The clocks are needed early, so infracfg stays a CLK_OF_DECLARE provider.
+ * The _DRIVER variant still lets the platform driver below bind to the node
+ * for the reset controller, which 6.18 only registers against a device.
+ */
+CLK_OF_DECLARE_DRIVER(mtk_infrasys, "mediatek,mt8163-infracfg",
+		      mtk_infrasys_init);
+
+static int mt8163_infracfg_reset_probe(struct platform_device *pdev)
+{
+	return mtk_register_reset_controller_with_dev(&pdev->dev,
+						      &mt8163_rst_desc);
+}
+
+static const struct of_device_id mt8163_infracfg_reset_match[] = {
+	{ .compatible = "mediatek,mt8163-infracfg" },
+	{}
+};
+
+static struct platform_driver mt8163_infracfg_reset_driver = {
+	.probe = mt8163_infracfg_reset_probe,
+	.driver = {
+		.name = "clk-mt8163-infracfg-rst",
+		.of_match_table = mt8163_infracfg_reset_match,
+		.suppress_bind_attrs = true,
+	},
+};
+builtin_platform_driver(mt8163_infracfg_reset_driver);
 
 struct mtk_clk_usb {
 	int id;
@@ -1107,7 +1134,19 @@ static void __init mtk_apmixedsys_init(struct device_node *node)
 	if (!clk_data)
 		return;
 
-	mtk_clk_register_plls(node, plls, ARRAY_SIZE(plls), clk_data);
+	/*
+	 * mtk_clk_register_plls() takes a struct device on 6.18, which does not
+	 * exist yet for a CLK_OF_DECLARE provider, so register each PLL here.
+	 */
+	for (i = 0; i < ARRAY_SIZE(plls); i++) {
+		clk = mtk_clk_register_pll(NULL, &plls[i], base);
+		if (IS_ERR(clk)) {
+			pr_err("Failed to register clk %s: %ld\n",
+			       plls[i].name, PTR_ERR(clk));
+			continue;
+		}
+		clk_data->hws[plls[i].id] = clk;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(apmixed_usb); i++) {
 		const struct mtk_clk_usb *cku = &apmixed_usb[i];
