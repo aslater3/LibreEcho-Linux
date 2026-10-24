@@ -584,16 +584,19 @@ static const struct attribute_group amz_privacy_group = {
 	.attrs = amz_privacy_attrs,
 };
 
+/*
+ * @con_id is the property name without its "-gpio" suffix; gpiolib finds
+ * both "<con_id>-gpios" and the legacy "<con_id>-gpio" used by the board DT.
+ */
 static struct gpio_desc *
-amz_privacy_get_optional_gpio(struct device *dev, const char *property,
+amz_privacy_get_optional_gpio(struct device *dev, const char *con_id,
 			      enum gpiod_flags flags, const char *label)
 {
 	struct gpio_desc *gpio;
 
-	gpio = devm_gpiod_get_from_of_node(dev, dev->of_node, property, 0,
-					   flags, label);
-	if (PTR_ERR(gpio) == -ENOENT)
-		return NULL;
+	gpio = devm_gpiod_get_optional(dev, con_id, flags);
+	if (!IS_ERR_OR_NULL(gpio))
+		gpiod_set_consumer_name(gpio, label);
 
 	return gpio;
 }
@@ -642,7 +645,7 @@ static int amz_privacy_probe(struct platform_device *pdev)
 	priv->cur_priv = !!ret;
 
 	priv->bright_state_gpio =
-		amz_privacy_get_optional_gpio(dev, "bright-state-gpio",
+		amz_privacy_get_optional_gpio(dev, "bright-state",
 					      GPIOD_ASIS,
 					      "amz-bright-state");
 	if (IS_ERR(priv->bright_state_gpio))
@@ -652,7 +655,7 @@ static int amz_privacy_probe(struct platform_device *pdev)
 	/* Also accept the property used by the supplied vendor source. */
 	if (!priv->bright_state_gpio)
 		priv->bright_state_gpio =
-			amz_privacy_get_optional_gpio(dev, "mute-gpio",
+			amz_privacy_get_optional_gpio(dev, "mute",
 						      GPIOD_ASIS,
 						      "amz-mute");
 	if (IS_ERR(priv->bright_state_gpio))
@@ -740,7 +743,7 @@ static int amz_privacy_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int amz_privacy_remove(struct platform_device *pdev)
+static void amz_privacy_remove(struct platform_device *pdev)
 {
 	struct amz_privacy *priv = platform_get_drvdata(pdev);
 
@@ -762,8 +765,6 @@ static int amz_privacy_remove(struct platform_device *pdev)
 	if (amz_privacy_data == priv)
 		amz_privacy_data = NULL;
 	mutex_unlock(&amz_privacy_lock);
-
-	return 0;
 }
 
 static const struct of_device_id amz_privacy_of_match[] = {
