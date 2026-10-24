@@ -176,12 +176,12 @@ static int amazon_thermistor_read_temp(struct amazon_thermistor *sensor,
 static int amazon_thermistor_get_temp(struct thermal_zone_device *tzd,
 				      int *temp)
 {
-	struct amazon_thermistor *sensor = tzd->devdata;
+	struct amazon_thermistor *sensor = thermal_zone_device_priv(tzd);
 
 	return amazon_thermistor_read_temp_raw(sensor, temp);
 }
 
-static struct thermal_zone_device_ops amazon_thermistor_tz_ops = {
+static const struct thermal_zone_device_ops amazon_thermistor_tz_ops = {
 	.get_temp = amazon_thermistor_get_temp,
 };
 
@@ -336,9 +336,9 @@ static int amazon_thermistor_probe(struct platform_device *pdev)
 	if (!zone_name)
 		return -ENOMEM;
 
-	sensor->tzd = thermal_zone_device_register(zone_name, 0, 0, sensor,
-						   &amazon_thermistor_tz_ops,
-						   NULL, 0, 0);
+	sensor->tzd = thermal_tripless_zone_device_register(zone_name, sensor,
+							    &amazon_thermistor_tz_ops,
+							    NULL);
 	if (IS_ERR(sensor->tzd))
 		return dev_err_probe(&pdev->dev, PTR_ERR(sensor->tzd),
 				     "failed to register thermal zone\n");
