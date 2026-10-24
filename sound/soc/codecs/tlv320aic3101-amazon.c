@@ -1690,14 +1690,14 @@ static int aic31xx_dai_set_fmt(struct snd_soc_dai *codec_dai,
 	dev_dbg(component->dev, "%s:+ %x\n", __func__, fmt);
 
 	/* set master/slave audio interface */
-	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_CBP_CFP:
 		iface_reg1 = AIC31XX_BCLK_MASTER | AIC31XX_WCLK_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		iface_reg1 &= ~(AIC31XX_BCLK_MASTER | AIC31XX_WCLK_MASTER);
 		break;
-	case SND_SOC_DAIFMT_CBS_CFM:
+	case SND_SOC_DAIFMT_CBC_CFP:
 		iface_reg1 = AIC31XX_BCLK_MASTER;
 		iface_reg1 &= ~(AIC31XX_WCLK_MASTER);
 		break;
@@ -2070,7 +2070,7 @@ static int tlv320aic3101_init(struct snd_soc_component *component)
 	}
 
 	aic31xx_set_bias_level(component, SND_SOC_BIAS_OFF);
-	snd_soc_component_get_dapm(component)->idle_bias_off = true;
+	snd_soc_dapm_set_idle_bias(snd_soc_component_get_dapm(component), false);
 
 	return ret;
 }
@@ -2314,7 +2314,7 @@ static struct i2c_driver aic31xx_i2c_driver = {
 		.acpi_match_table = ACPI_PTR(aic31xx_acpi_match),
 #endif
 	},
-	.probe_new	= aic31xx_i2c_probe,
+	.probe		= aic31xx_i2c_probe,
 	.remove		= aic31xx_i2c_remove,
 	.id_table	= aic31xx_i2c_id,
 };

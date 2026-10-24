@@ -717,7 +717,6 @@ static const struct file_operations mt8163_afe_sgen_fops = {
 	.owner = THIS_MODULE,
 	.open = simple_open,
 	.write = mt8163_afe_sgen_write,
-	.llseek = no_llseek,
 };
 
 static int mt8163_afe_stop(struct mt8163_afe *afe)
@@ -1064,10 +1063,10 @@ mt8163_pcm_pointer(struct snd_soc_component *component,
 	return bytes_to_frames(substream->runtime, ptr - base);
 }
 
-static int mt8163_pcm_copy_user(struct snd_soc_component *component,
-				struct snd_pcm_substream *substream,
-				int channel, unsigned long pos,
-				void __user *buf, unsigned long bytes)
+static int mt8163_pcm_copy(struct snd_soc_component *component,
+			   struct snd_pcm_substream *substream,
+			   int channel, unsigned long pos,
+			   struct iov_iter *iter, unsigned long bytes)
 {
 	struct mt8163_afe *afe = snd_soc_component_get_drvdata(component);
 	size_t first;
@@ -1076,9 +1075,13 @@ static int mt8163_pcm_copy_user(struct snd_soc_component *component,
 	if (!bytes || pos >= substream->runtime->dma_bytes ||
 	    bytes > substream->runtime->dma_bytes)
 		return -EINVAL;
-	bounce = memdup_user(buf, bytes);
-	if (IS_ERR(bounce))
-		return PTR_ERR(bounce);
+	bounce = kmalloc(bytes, GFP_KERNEL);
+	if (!bounce)
+		return -ENOMEM;
+	if (copy_from_iter(bounce, bytes, iter) != bytes) {
+		kfree(bounce);
+		return -EFAULT;
+	}
 	first = min_t(size_t, bytes, substream->runtime->dma_bytes - pos);
 	memcpy_toio(afe->sram + pos, bounce, first);
 	if (first < bytes)
@@ -1099,7 +1102,7 @@ static const struct snd_soc_component_driver mt8163_afe_component = {
 	.prepare = mt8163_pcm_prepare,
 	.trigger = mt8163_pcm_trigger,
 	.pointer = mt8163_pcm_pointer,
-	.copy_user = mt8163_pcm_copy_user,
+	.copy = mt8163_pcm_copy,
 	.use_dai_pcm_id = true,
 	.legacy_dai_naming = true,
 };
@@ -1298,7 +1301,7 @@ disable_pm:
 	return ret;
 }
 
-static int mt8163_afe_remove(struct platform_device *pdev)
+static void mt8163_afe_remove(struct platform_device *pdev)
 {
 	struct mt8163_afe *afe = platform_get_drvdata(pdev);
 
@@ -1307,7 +1310,6 @@ static int mt8163_afe_remove(struct platform_device *pdev)
 	mt8163_afe_analog_clock(afe, false);
 	mt8163_afe_clocks_disable(afe);
 	pm_runtime_disable(&pdev->dev);
-	return 0;
 }
 
 static const struct of_device_id mt8163_afe_of_match[] = {

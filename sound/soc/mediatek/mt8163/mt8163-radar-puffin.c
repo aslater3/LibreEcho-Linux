@@ -509,7 +509,7 @@ static int radar_codec_mute_put(struct snd_kcontrol *kcontrol,
 	if (priv->codec_mute == requested)
 		return 0;
 
-	codec_dai = asoc_rtd_to_codec(priv->speaker_rtd, 0);
+	codec_dai = snd_soc_rtd_to_codec(priv->speaker_rtd, 0);
 	ret = snd_soc_component_write(codec_dai->component,
 				      RADAR_DAC_DOUTCTL,
 				      requested ? RADAR_DAC_MFP2_MUTE :
@@ -548,7 +548,7 @@ static const struct snd_kcontrol_new radar_controls[] = {
 static int radar_speaker_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	priv->speaker_rtd = rtd;
@@ -625,7 +625,7 @@ idle_i2s:
 static int radar_speaker_safe(struct radar_card *priv)
 {
 	struct snd_soc_dai *codec_dai =
-		asoc_rtd_to_codec(priv->speaker_rtd, 0);
+		snd_soc_rtd_to_codec(priv->speaker_rtd, 0);
 	int first = 0;
 	int ret;
 
@@ -702,7 +702,7 @@ static void radar_speaker_release_work(struct work_struct *work)
 	if (!priv->speaker_release_pending || !priv->speaker_rtd)
 		return;
 
-	component = asoc_rtd_to_codec(priv->speaker_rtd, 0)->component;
+	component = snd_soc_rtd_to_codec(priv->speaker_rtd, 0)->component;
 	status = snd_soc_component_read(component, RADAR_DAC_GAIN_APPLIED);
 	if (status < 0) {
 		dev_err(component->dev,
@@ -754,7 +754,7 @@ static void radar_speaker_release_work(struct work_struct *work)
 
 static int radar_speaker_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
 
@@ -775,7 +775,7 @@ static int radar_speaker_startup(struct snd_pcm_substream *substream)
 
 static void radar_speaker_shutdown(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
 
@@ -843,9 +843,9 @@ static int radar_speaker_apply_profile(struct snd_soc_component *component,
 static int radar_speaker_hw_params(struct snd_pcm_substream *substream,
 				   struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	ret = radar_speaker_enable_clocks(priv);
@@ -887,7 +887,7 @@ fail:
 
 static int radar_speaker_hw_free(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 
 	return radar_speaker_safe(priv);
@@ -895,10 +895,10 @@ static int radar_speaker_hw_free(struct snd_pcm_substream *substream)
 
 static int radar_speaker_prepare(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_component *component =
-		asoc_rtd_to_codec(rtd, 0)->component;
+		snd_soc_rtd_to_codec(rtd, 0)->component;
 	int ret;
 
 	ret = radar_speaker_enable_clocks(priv);
@@ -969,10 +969,10 @@ fail:
 
 static int radar_speaker_trigger(struct snd_pcm_substream *substream, int cmd)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_soc_component *component =
-		asoc_rtd_to_codec(rtd, 0)->component;
+		snd_soc_rtd_to_codec(rtd, 0)->component;
 
 	if (cmd != SNDRV_PCM_TRIGGER_START &&
 	    cmd != SNDRV_PCM_TRIGGER_RESUME) {
@@ -1014,7 +1014,7 @@ static const struct snd_soc_ops radar_speaker_ops = {
 
 static int radar_i2s1_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
 
@@ -1036,7 +1036,7 @@ idle_i2s:
 
 static void radar_i2s1_shutdown(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 
 	mt8163_afe_select_amp(&priv->afe_pdev->dev, false);
@@ -1052,9 +1052,9 @@ static const struct snd_soc_ops radar_i2s1_ops = {
 static int radar_capture_hw_params(struct snd_pcm_substream *substream,
 				   struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 	unsigned int rx_mask;
 	int slot_width;
 	int ret;
@@ -1071,7 +1071,7 @@ static int radar_capture_hw_params(struct snd_pcm_substream *substream,
 		return ret;
 	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_DSP_B |
 				  SND_SOC_DAIFMT_NB_NF |
-				  SND_SOC_DAIFMT_CBM_CFM);
+				  SND_SOC_DAIFMT_CBP_CFP);
 	if (ret)
 		return ret;
 
@@ -1083,7 +1083,7 @@ static int radar_capture_hw_params(struct snd_pcm_substream *substream,
 
 static int radar_capture_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
 
@@ -1095,7 +1095,7 @@ static int radar_capture_startup(struct snd_pcm_substream *substream)
 
 static void radar_capture_shutdown(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct radar_card *priv = snd_soc_card_get_drvdata(rtd->card);
 
 	mt8163_mclk_disable(priv->mclk);

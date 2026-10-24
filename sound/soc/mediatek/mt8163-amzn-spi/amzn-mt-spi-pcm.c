@@ -550,10 +550,10 @@ amzn_mt_spi_pcm_pointer(struct snd_soc_component *component,
 	return frames;
 }
 
-static int amzn_mt_spi_pcm_copy_user(struct snd_soc_component *component,
-				     struct snd_pcm_substream *substream,
-				     int channel, unsigned long pos,
-				     void __user *dst, unsigned long bytes)
+static int amzn_mt_spi_pcm_copy(struct snd_soc_component *component,
+				struct snd_pcm_substream *substream,
+				int channel, unsigned long pos,
+				struct iov_iter *iter, unsigned long bytes)
 {
 	struct amzn_spi_priv *priv = snd_soc_component_get_drvdata(component);
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -569,7 +569,7 @@ static int amzn_mt_spi_pcm_copy_user(struct snd_soc_component *component,
 				    priv->kernel_overruns);
 	}
 
-	if (copy_to_user(dst, runtime->dma_area + pos, bytes))
+	if (copy_to_iter(runtime->dma_area + pos, bytes, iter) != bytes)
 		return -EFAULT;
 
 	return 0;
@@ -603,7 +603,7 @@ static const struct snd_soc_component_driver amzn_mt_spi_component = {
 	.hw_free = amzn_mt_spi_pcm_hw_free,
 	.trigger = amzn_mt_spi_pcm_trigger,
 	.pointer = amzn_mt_spi_pcm_pointer,
-	.copy_user = amzn_mt_spi_pcm_copy_user,
+	.copy = amzn_mt_spi_pcm_copy,
 	.pcm_construct = amzn_mt_spi_pcm_construct,
 	.use_dai_pcm_id = true,
 	.legacy_dai_naming = 1,
