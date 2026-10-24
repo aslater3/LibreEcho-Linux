@@ -275,12 +275,11 @@ static int mtk_bt_hci_init(void)
 		return -ENOMEM;
 
 	mtk_hci.hdev->bus = HCI_VIRTUAL;
-	mtk_hci.hdev->dev_type = HCI_PRIMARY;
-	set_bit(HCI_QUIRK_DEFERRED_SETUP, &mtk_hci.hdev->quirks);
+	hci_set_quirk(mtk_hci.hdev, HCI_QUIRK_DEFERRED_SETUP);
 	/* The MT8163 BTIF firmware advertises extended LMP features but returns
 	 * a non-success status for Read Local Extended Features.  Those optional
 	 * pages are not needed for the BR/EDR transport used by this board. */
-	set_bit(HCI_QUIRK_BROKEN_LOCAL_EXT_FEATURES_PAGE_2, &mtk_hci.hdev->quirks);
+	hci_set_quirk(mtk_hci.hdev, HCI_QUIRK_BROKEN_LOCAL_EXT_FEATURES_PAGE_2);
 	mtk_hci.hdev->open = mtk_bt_hci_open;
 	mtk_hci.hdev->close = mtk_bt_hci_close;
 	mtk_hci.hdev->send = mtk_bt_hci_send;
@@ -790,7 +789,7 @@ static int BT_init(void)
 		goto error;
 
 #if WMT_CREATE_NODE_DYNAMIC
-	stpbt_class = class_create(THIS_MODULE, "stpbt");
+	stpbt_class = class_create("stpbt");
 	if (IS_ERR(stpbt_class))
 		goto error;
 	stpbt_dev = device_create(stpbt_class, NULL, dev, NULL, "stpbt");

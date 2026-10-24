@@ -380,10 +380,18 @@ struct early_suspend wmt_early_suspend_handler = {
 static struct notifier_block wmt_fb_notifier;
 static int wmt_fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
 {
+	WMT_DBG_FUNC("wmt_fb_notifier_callback\n");
+
+#ifndef FB_EVENT_BLANK
+	/*
+	 * Linux 6.18 no longer sends fbdev blank events. The Echo has no
+	 * framebuffer (CONFIG_FB is off), so this notifier never ran there
+	 * anyway; keep the screen-on defaults.
+	 */
+	return 0;
+#else
 	struct fb_event *evdata = data;
 	INT32 blank;
-
-	WMT_DBG_FUNC("wmt_fb_notifier_callback\n");
 
 	/* If we aren't interested in this event, skip it immediately ... */
 	if (event != FB_EVENT_BLANK)
@@ -413,6 +421,7 @@ static int wmt_fb_notifier_callback(struct notifier_block *self, unsigned long e
 		break;
 	}
 	return 0;
+#endif
 }
 #endif
 /*******************************************************************************
@@ -2581,7 +2590,7 @@ static int WMT_init(void)
 	WMT_INFO_FUNC("driver(major %d) installed\n", gWmtMajor);
 
 #if WMT_CREATE_NODE_DYNAMIC
-	wmt_class = class_create(THIS_MODULE, "stpwmt");
+	wmt_class = class_create("stpwmt");
 	if (IS_ERR(wmt_class))
 		goto error;
 	wmt_dev = device_create(wmt_class, NULL, devID, NULL, "stpwmt");

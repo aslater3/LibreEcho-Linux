@@ -153,7 +153,7 @@
 static atomic_t fgSuspendFlag = ATOMIC_INIT(0);
 static atomic_t fgIndicateWoW = ATOMIC_INIT(0);
 static int wlan_probe(struct platform_device *pdev);
-static int wlan_remove(struct platform_device *pdev);
+static void wlan_remove(struct platform_device *pdev);
 static int wlan_suspend(struct platform_device *pdev, pm_message_t state);
 static int wlan_resume(struct platform_device *pdev);
 static void wlan_release(struct device *dev);
@@ -433,11 +433,10 @@ static int wlan_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int wlan_remove(struct platform_device *pdev)
+static void wlan_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 	DBGLOG(INIT, INFO, "wlan platform driver remove\n");
-	return 0;
 }
 
 static void wlan_shutdown(struct platform_device *pdev)

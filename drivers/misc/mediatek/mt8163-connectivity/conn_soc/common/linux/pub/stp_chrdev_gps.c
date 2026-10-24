@@ -469,7 +469,7 @@ static int GPS_init(void)
 		goto error;
 
 #if WMT_CREATE_NODE_DYNAMIC
-	gps_class = class_create(THIS_MODULE, "stpgps");
+	gps_class = class_create("stpgps");
 	if (IS_ERR(gps_class))
 		goto error;
 	gps_dev = device_create(gps_class, NULL, dev, NULL, "stpgps");

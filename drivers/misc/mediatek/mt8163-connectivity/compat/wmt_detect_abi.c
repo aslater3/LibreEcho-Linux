@@ -80,7 +80,6 @@ static const struct file_operations wmt_detect_fops = {
 	.read = wmt_detect_read,
 	.write = wmt_detect_write,
 	.unlocked_ioctl = wmt_detect_ioctl,
-	.llseek = no_llseek,
 };
 
 static int __init wmt_detect_abi_init(void)
@@ -98,7 +97,7 @@ static int __init wmt_detect_abi_init(void)
 	if (ret)
 		goto unregister_region;
 
-	wmt_detect_class = class_create(THIS_MODULE, WMT_DETECT_NAME);
+	wmt_detect_class = class_create(WMT_DETECT_NAME);
 	if (IS_ERR(wmt_detect_class)) {
 		ret = PTR_ERR(wmt_detect_class);
 		wmt_detect_class = NULL;
