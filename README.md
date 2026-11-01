@@ -231,3 +231,18 @@ python3 -B tools/mt8163_bluetooth_contract_test.py
 
 This static check does not replace live HCI controller-information, discovery,
 pairing, and connection acceptance on the target device.
+
+## MT8163 netfilter (nftables) closure
+
+The platform default inbound firewall is an nftables `inet` ruleset applied at
+boot. `mt8163_arm32_defconfig` (shared by `radar_puffin` and `biscuit`) builds
+in the netfilter, conntrack, nf_tables, nft `ct` and reject expressions it
+needs. Built-in rather than modular, so the ruleset can load before any module
+loading in the rootfs. Conntrack adds memory and per-packet cost that has not
+been measured on hardware.
+
+```sh
+python3 -B tools/mt8163_netfilter_contract_test.py
+```
+
+This static check does not replace an on-device ruleset load and port scan.

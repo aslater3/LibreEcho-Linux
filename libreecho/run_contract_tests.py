@@ -34,6 +34,7 @@ TESTS = (
     "tools/mt8163_pstore_ramoops_contract_test.py",
     "tools/mt8163_mute_lamp_contract_test.py",
     "tools/mt8163_bluetooth_contract_test.py",
+    "tools/mt8163_netfilter_contract_test.py",
     "drivers/misc/mediatek/mt8163-connectivity/test_idme_factory_mac_contract.py",
     "drivers/misc/mediatek/mt8163-connectivity/test_wext_cfg80211_fallback.py",
     "drivers/misc/mediatek/mt8163-connectivity/test_wifi_state_reporting_contract.py",
