@@ -259,6 +259,7 @@ static void amzn_spi_data_read(struct work_struct *work)
 		container_of(work, struct amzn_spi_priv, spi_work);
 	struct snd_pcm_substream *substream = priv->substream;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	const int pool_nice = task_nice(current); /* shared WQ_HIGHPRI pool worker: restored at out: */
 	struct dough_frame *tx_frame;
 	struct dough_frame *rx_frame;
 	u8 *timestamp_frame;
@@ -421,6 +422,7 @@ delay:
 	}
 
 out:
+	sched_set_normal(current, pool_nice); /* else the pool worker stays SCHED_FIFO for unrelated work */
 	kfree(timestamp_frame);
 	kfree(rx_frame);
 	kfree(tx_frame);
