@@ -21,6 +21,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 DTS = ROOT / "arch/arm/boot/dts/libreecho-radar-puffin.dts"
+GIZA_DTS = ROOT / "arch/arm/boot/dts/libreecho-giza-evt.dts"
 DEFCONFIG = ROOT / "arch/arm/configs/mt8163_arm32_defconfig"
 
 
@@ -34,6 +35,13 @@ class ArchTimerOneshotContractTests(unittest.TestCase):
         timer = node_of(DTS.read_text(), "\ttimer {\n")
         self.assertIn('compatible = "arm,armv8-timer";', timer)
         self.assertIn("\t\talways-on;\n", timer)
+
+    def test_giza_board_marks_the_soc_timer_always_on(self) -> None:
+        # mt8163.dtsi describes the SoC, whose cluster-sleep does stop the timer;
+        # always-on is a property of this kernel config, so the board asserts it.
+        giza = GIZA_DTS.read_text()
+        self.assertIn('#include "mt8163.dtsi"', giza)
+        self.assertIn("&{/timer} {\n\talways-on;\n};\n", giza)
 
     def test_always_on_holds_only_without_cpuidle(self) -> None:
         defconfig = DEFCONFIG.read_text().splitlines()

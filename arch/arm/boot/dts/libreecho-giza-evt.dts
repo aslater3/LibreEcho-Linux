@@ -118,6 +118,12 @@
 	};
 };
 
+/* No cpuidle is built (CONFIG_CPU_IDLE=n): CPUs only WFI and the per-CPU timer never stops.
+ * Without this it is C3STOP and, with no broadcast device, the tick stays periodic low-res. */
+&{/timer} {
+	always-on;
+};
+
 &accdet {
 	interrupt-parent = <&pio>;
 	interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
