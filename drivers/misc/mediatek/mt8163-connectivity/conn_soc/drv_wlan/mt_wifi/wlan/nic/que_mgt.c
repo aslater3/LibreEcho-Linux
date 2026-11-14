@@ -3164,6 +3164,7 @@ qmPopOutDueToFallWithin(IN P_RX_BA_ENTRY_T prReorderQueParm, OUT P_QUE_T prRetur
 	P_QUE_T prReorderQue;
 	BOOLEAN fgDequeuHead, fgMissing;
 	OS_SYSTIME rCurrentTime, *prMissTimeout;
+	UINT_32 u4Skipped = 0;
 
 	prReorderQue = &(prReorderQueParm->rReOrderQue);
 
@@ -3202,7 +3203,13 @@ qmPopOutDueToFallWithin(IN P_RX_BA_ENTRY_T prReorderQueParm, OUT P_QUE_T prRetur
 				fgDequeuHead = TRUE;
 				prReorderQueParm->u2WinStart = (((prReorderedSwRfb->u2SSN) + 1) % MAX_SEQ_NO_COUNT);
 
-				fgMissing = FALSE;
+				/* Keep fgMissing set: every frame still queued arrived
+				 * before this timeout expired, so skip every remaining
+				 * hole in this pass. Releasing only one hole per call left
+				 * a burst loss waiting for one new arrival (and another
+				 * full timeout) per hole, stalling RX for 10-30 s while
+				 * the sender backed off. */
+				u4Skipped++;
 				*fgIsTimeout = TRUE;
 			} else
 				break;
@@ -3226,6 +3233,10 @@ qmPopOutDueToFallWithin(IN P_RX_BA_ENTRY_T prReorderQueParm, OUT P_QUE_T prRetur
 			QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prReorderedSwRfb);
 		}
 	}
+
+	if (u4Skipped)
+		pr_info_ratelimited("ECHO_WLAN_RX_BA: timeout released %u hole(s) tid=%u win_start=%u\n",
+				    u4Skipped, prReorderQueParm->ucTid, prReorderQueParm->u2WinStart);
 
 	if (QUEUE_IS_EMPTY(prReorderQue))
 		*prMissTimeout = 0;
