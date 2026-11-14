@@ -339,6 +339,12 @@
 		 * timer registers, as required by the ARM32 binding for this case.
 		 */
 		arm,cpu-registers-not-fw-configured;
+		/*
+		 * No cpuidle driver is built (CONFIG_CPU_IDLE=n): CPUs only WFI, so the per-CPU
+		 * timer never stops.  Without this it is C3STOP, and with no broadcast device the
+		 * tick never leaves periodic low-res mode (10 ms hrtimers, no NO_HZ idle).
+		 */
+		always-on;
 	};
 
 	soc {
