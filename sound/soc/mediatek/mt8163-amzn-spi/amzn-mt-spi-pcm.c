@@ -409,8 +409,8 @@ delay:
 						    previous_time);
 		if (elapsed_us < SPI_READ_WAIT_MIN_US - MARGIN_US &&
 		    !rx_frame->dsf.overrun) {
-			usleep_range(SPI_READ_WAIT_MIN_US - elapsed_us,
-				     SPI_READ_WAIT_MAX_US - elapsed_us);
+			/* TASK_IDLE: this always-on pacing sleep is not a D-state wait and is not load. */
+			usleep_idle_range(SPI_READ_WAIT_MIN_US - elapsed_us, SPI_READ_WAIT_MAX_US - elapsed_us);
 			previous_time = ktime_get_raw();
 		} else {
 			previous_time = current_time;
