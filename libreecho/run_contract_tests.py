@@ -37,6 +37,7 @@ TESTS = (
     "drivers/misc/mediatek/mt8163-connectivity/test_idme_factory_mac_contract.py",
     "drivers/misc/mediatek/mt8163-connectivity/test_wext_cfg80211_fallback.py",
     "drivers/misc/mediatek/mt8163-connectivity/test_wifi_state_reporting_contract.py",
+    "drivers/misc/mediatek/mt8163-connectivity/test_wlan_rx_reorder_timeout_contract.py",
 )
 
 

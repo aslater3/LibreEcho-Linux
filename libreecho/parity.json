@@ -1,6 +1,6 @@
 {
   "repository": "aslater3/LibreEcho-Linux-6.1",
-  "ref": "2da646edaf294ead68123a2450eff49b8084c3ea",
+  "ref": "ea26b8a088e3cafdcd46a6f85f6020ec9b9c0acc",
   "defconfig": "mt8163_arm32_defconfig",
   "outputs": [
     "arch/arm/boot/zImage",
